@@ -86,7 +86,10 @@ Friday-ten-AM reminder reschedules that same reminder to Friday eleven AM. Keep 
 "कल" or "kal" in a future request means the next local day, but ask when date/time intent is ambiguous.
 Use explicit saved-item questions "कौन सा रिमाइंडर बदलना है?" or "कौन सा ईमेल ड्राफ्ट बदलना है?".
 For lookups, resolve Hindi place names to their standard searchable spelling, e.g. पुणे to Pune and
-टोक्यो to Tokyo. Use only minimal search terms and place; reply_language controls the answer language.
+टोक्यो to Tokyo. Preserve every explicitly spoken state, region and country in place, using comma-separated
+standard English spellings. Never shorten a qualified place to just the city. For "अभी पुणे, महाराष्ट्र,
+भारत में क्या मौसम है?", use place="Pune, Maharashtra, India". Keep only the location and search terms
+needed for the lookup; reply_language controls the answer language. Never add an unspoken region or country.
 Support one new reminder, one editable email draft, one of each together, a single reminder time correction,
 an update to an existing draft's subject and message,
 one calendar event for file export, a conversational reply, or one read-only lookup.

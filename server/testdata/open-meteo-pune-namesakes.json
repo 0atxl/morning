@@ -1,0 +1,35 @@
+{
+  "results": [
+    {
+      "name": "Pune",
+      "admin1": "Pará",
+      "country": "Brazil",
+      "country_code": "BR",
+      "timezone": "America/Belem",
+      "latitude": -1.4,
+      "longitude": -48.5,
+      "feature_code": "PPL"
+    },
+    {
+      "name": "Pune",
+      "admin1": "Maharashtra",
+      "country": "India",
+      "country_code": "IN",
+      "timezone": "Asia/Kolkata",
+      "latitude": 18.52,
+      "longitude": 73.86,
+      "feature_code": "PPLA2",
+      "population": 3000000
+    },
+    {
+      "name": "Pune",
+      "admin1": "Oecusse",
+      "country": "Timor-Leste",
+      "country_code": "TL",
+      "timezone": "Asia/Dili",
+      "latitude": -9.3,
+      "longitude": 124.3,
+      "feature_code": "PPL"
+    }
+  ]
+}

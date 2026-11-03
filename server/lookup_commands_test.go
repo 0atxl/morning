@@ -43,6 +43,43 @@ func TestLookupCommandWeatherUsesExistingCommandFlow(t *testing.T) {
 	}
 }
 
+func TestLookupCommandHindiWeatherKeepsCityStateAndCountry(t *testing.T) {
+	t.Setenv("TAVILY_API_KEY", "")
+	calls := 0
+	handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		switch r.URL.Host {
+		case "api.groq.com":
+			return lookupIntentResponse(modelInterpretation{ReplyLanguage: "hi", Actions: []action{}, Lookup: &lookupQuery{Kind: "weather", Place: "Pune, Maharashtra, India"}}), nil
+		case "geocoding-api.open-meteo.com":
+			if r.URL.Query().Get("name") != "Pune, Maharashtra, India" {
+				t.Fatal("state/country lost before geocoding")
+			}
+			// Deliberately include out-of-region results first and with unknown
+			// populations. Go must honor the spoken qualifiers, not list order.
+			return lookupJSONResponse(200, fixture(t, "open-meteo-pune-namesakes.json")), nil
+		case "api.open-meteo.com":
+			if r.URL.Query().Get("latitude") != "18.52" || r.URL.Query().Get("longitude") != "73.86" || r.URL.Query().Get("timezone") != "Asia/Kolkata" {
+				t.Fatal("weather selected a namesake outside the spoken location")
+			}
+			return lookupJSONResponse(200, fixture(t, "open-meteo-current.json")), nil
+		default:
+			t.Fatal("weather must not call Tavily or another provider")
+			return nil, nil
+		}
+	})
+	request := mustLookupRequest(t)
+	request.Transcript = "अभी पुणे, महाराष्ट्र, भारत में क्या मौसम है?"
+	status, body := requestCommand(t, handler, request)
+	var result commandResponse
+	if json.Unmarshal([]byte(body), &result) != nil || status != 200 || result.Lookup == nil || result.Clarification != nil || result.LookupContext != nil || result.ReplyLanguage != "hi" || calls != 3 {
+		t.Fatalf("qualified weather must answer without another place question: %d %s", status, body)
+	}
+	if !strings.Contains(result.Lookup.Answer, "Pune, Maharashtra, India") || result.Lookup.Timezone != "Asia/Kolkata" {
+		t.Fatalf("wrong resolved place: %+v", result.Lookup)
+	}
+}
+
 func TestLookupCommandSpokenPlaceFinishesOriginalSearchWithoutInterpretingAnAction(t *testing.T) {
 	t.Setenv("TAVILY_API_KEY", "fixture-tavily-secret")
 	intents := 0

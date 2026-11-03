@@ -42,8 +42,14 @@ func (p lookupPlace) label() string {
 
 func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlace, error) {
 	parts := strings.Split(place, ",")
-	name := strings.Trim(strings.TrimSpace(parts[0]), ".?!")
-	args := url.Values{"name": {name}, "count": {"5"}, "language": {"en"}, "format": {"json"}}
+	for i := range parts {
+		parts[i] = strings.Trim(strings.TrimSpace(parts[i]), ".?!।")
+	}
+	name := parts[0]
+	// Open-Meteo applies a comma-separated region/country qualifier before its
+	// result cap. Sending only the city loses that filter and returns namesakes.
+	// Still check every supplied qualifier against the returned place below.
+	args := url.Values{"name": {strings.Join(parts, ", ")}, "count": {"5"}, "language": {"en"}, "format": {"json"}}
 	if hindiText(place) {
 		args.Set("language", "hi")
 	}
@@ -71,7 +77,6 @@ func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlac
 		label := candidate.label()
 		qualified := true
 		for _, qualifier := range parts[1:] {
-			qualifier = strings.Trim(strings.TrimSpace(qualifier), ".?!")
 			if qualifier == "" || !(strings.EqualFold(qualifier, candidate.CountryCode) || strings.EqualFold(qualifier, candidate.Country) || strings.EqualFold(qualifier, candidate.Admin1)) {
 				qualified = false
 			}

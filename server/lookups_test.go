@@ -275,6 +275,35 @@ func TestLookupCountryWithMultipleZonesAsksForCity(t *testing.T) {
 	}
 }
 
+func TestLookupGeocodingKeepsAndEnforcesAllPlaceQualifiers(t *testing.T) {
+	for _, tc := range []struct {
+		place string
+		want  int
+	}{
+		{"Pune, Maharashtra, India", 1},
+		{"Pune, India", 1},
+		{"Pune, Maharashtra, IN", 1},
+		{"Pune, Maharashtra, Brazil", 0},
+		{"Pune, California, United States", 0},
+	} {
+		t.Run(tc.place, func(t *testing.T) {
+			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
+				if r.URL.Query().Get("name") != tc.place {
+					t.Fatal("explicit qualifiers dropped from the provider query")
+				}
+				return lookupJSONResponse(200, fixture(t, "open-meteo-pune-namesakes.json")), nil
+			})
+			places, err := s.geocode(context.Background(), tc.place)
+			if err != nil || len(places) != tc.want {
+				t.Fatalf("qualified lookup got %d places, want %d: %v", len(places), tc.want, err)
+			}
+			if tc.want > 0 && (places[0].CountryCode != "IN" || places[0].Admin1 != "Maharashtra") {
+				t.Fatalf("ignored explicit region/country: %+v", places)
+			}
+		})
+	}
+}
+
 func TestLookupFailureIsolationAndRedaction(t *testing.T) {
 	for _, tc := range []struct {
 		name, code string
