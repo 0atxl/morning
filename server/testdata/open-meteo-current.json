@@ -1,0 +1,13 @@
+{
+  "timezone": "Asia/Kolkata",
+  "current_units": {
+    "time": "unixtime",
+    "temperature_2m": "°C",
+    "weather_code": "wmo code"
+  },
+  "current": {
+    "time": 1793675700,
+    "temperature_2m": 24.5,
+    "weather_code": 2
+  }
+}

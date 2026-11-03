@@ -1,0 +1,26 @@
+{
+  "results": [
+    {
+      "name": "Springfield",
+      "admin1": "Illinois",
+      "country": "United States",
+      "country_code": "US",
+      "timezone": "America/Chicago",
+      "latitude": 39.8,
+      "longitude": -89.65,
+      "feature_code": "PPLA",
+      "population": 110000
+    },
+    {
+      "name": "Springfield",
+      "admin1": "Massachusetts",
+      "country": "United States",
+      "country_code": "US",
+      "timezone": "America/New_York",
+      "latitude": 42.1,
+      "longitude": -72.59,
+      "feature_code": "PPLA2",
+      "population": 150000
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "results": [
+    {
+      "name": "Tokyo",
+      "admin1": "Tokyo",
+      "country": "Japan",
+      "country_code": "JP",
+      "timezone": "Asia/Tokyo",
+      "latitude": 35.69,
+      "longitude": 139.69,
+      "feature_code": "PPLC",
+      "population": 8300000
+    }
+  ]
+}
