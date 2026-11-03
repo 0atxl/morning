@@ -95,6 +95,10 @@ func (a *api) speak(w http.ResponseWriter, r *http.Request) {
 		log.Printf("speech synthesis failed: %v", err)
 		if rejection, ok := err.(speechHTTPError); ok {
 			w.Header().Set("X-Morning-Speech-Provider-Status", strconv.Itoa(rejection.status))
+			if rejection.code == "paid_plan_required" {
+				writeError(w, http.StatusServiceUnavailable, "", "speech_plan_required", "The configured voice requires a paid ElevenLabs plan.", false)
+				return
+			}
 		}
 		writeProviderError(w, "", "speech", err)
 		return

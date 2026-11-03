@@ -34,6 +34,8 @@ The default address is `127.0.0.1:8080`. The shell loads `server/.env` before Go
 
 On the Azure VM, use `sudoedit /etc/morning/server.env` to set both ElevenLabs variables and `sudo systemctl restart morning-api.service` to load them. Use the Go service environment for these values. The frontend build needs neither. Startup and command interpretation work with either ElevenLabs setting blank.
 
+For a free ElevenLabs account, choose a premade voice available to that account. Shared Voice Library voices can appear in the account's list but require a paid plan for API use. Morning reports `speech_plan_required` when ElevenLabs rejects synthesis for this reason. [ElevenLabs voice types](https://elevenlabs.io/docs/overview/capabilities/voices)
+
 The included Vite development server proxies `/api` to `http://127.0.0.1:8080`. Production must serve the browser and `/api` on the same HTTPS origin. Go serves only the API, so the hosting layer serves the compiled web assets. No CORS configuration is needed for this arrangement.
 
 ## Temporary voice token

@@ -18,11 +18,11 @@ type PlaybackReport = (state: PlaybackState, message?: string) => void;
 
 async function speechRequestError(response: Response) {
   const status = response.headers.get("X-Morning-Speech-Provider-Status");
-  if (status && /^[1-5]\d\d$/.test(status))
-    return `ElevenLabs returned HTTP ${status}.`;
   if (response.headers.get("content-type")?.includes("application/json")) {
     const body = await response.json().catch(() => null);
     switch (body?.error?.code) {
+      case "speech_plan_required":
+        return "Morning's server voice requires a paid ElevenLabs plan.";
       case "speech_not_configured":
         return "Morning's server voice isn't configured.";
       case "speech_provider_invalid_response":
@@ -30,9 +30,12 @@ async function speechRequestError(response: Response) {
       case "speech_provider_timeout":
         return "The voice provider timed out.";
       case "speech_provider_unavailable":
-        return "Morning couldn't get audio from the voice provider.";
+        if (!status)
+          return "Morning couldn't get audio from the voice provider.";
     }
   }
+  if (status && /^[1-5]\d\d$/.test(status))
+    return `ElevenLabs returned HTTP ${status}.`;
   return `The speech request returned HTTP ${response.status}.`;
 }
 
