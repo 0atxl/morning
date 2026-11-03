@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ownerKey, pairOwnerBrowser } from "@/lib/reminder-alerts";
 import {
   acknowledgeReminderMail,
+  dismissReminderAlerts,
   pollReminders,
   type StoredReminder,
 } from "@/lib/reminder-store";
@@ -35,6 +36,7 @@ export function ReminderAlerts() {
   const [alerts, setAlerts] = useState<StoredReminder[]>([]);
   const [mailStatus, setMailStatus] = useState("");
   const [soundError, setSoundError] = useState(false);
+  const [dismissError, setDismissError] = useState("");
   const audio = useRef<AudioContext | null>(null);
 
   function enableSound() {
@@ -60,6 +62,7 @@ export function ReminderAlerts() {
     let syncing = false;
     let timer: number;
     let mailBackoff = 0;
+    let changes = 0;
 
     async function check() {
       if (!active) return;
@@ -69,15 +72,35 @@ export function ReminderAlerts() {
       }
       checking = true;
       let next = Date.now() + 30_000;
+      const version = changes;
       try {
-        const batch = await pollReminders(Date.now());
+        const batch = await pollReminders(
+          Date.now(),
+          () =>
+            active &&
+            document.visibilityState === "visible" &&
+            document.hasFocus() &&
+            audio.current?.state === "running",
+        );
         if (!active) return;
         next = batch.next;
-        if (batch.due.length) {
-          setAlerts((previous) => [...previous, ...batch.due]);
-          if (audio.current?.state === "running") chime(audio.current);
+        setAlerts(batch.due);
+        if (batch.ring.length && audio.current?.state === "running")
+          chime(audio.current);
+        if (version !== changes) {
+          queued = true;
+          return;
         }
         const key = ownerKey();
+        if (key) {
+          setMailStatus(
+            batch.pending.length
+              ? "Email changes are pending. Keep Morning open until scheduled."
+              : batch.hasMail
+                ? "All reminder email changes are scheduled. You can close this tab."
+                : "",
+          );
+        }
         if (
           key &&
           batch.pending.length &&
@@ -99,10 +122,15 @@ export function ReminderAlerts() {
                   body: JSON.stringify(job),
                   signal: AbortSignal.timeout(12_000),
                 });
-                if (!response.ok) throw new Error();
+                if (
+                  !response.ok ||
+                  (await response.json())?.status !== "scheduled"
+                )
+                  throw new Error();
                 await acknowledgeReminderMail(job);
               }
-              if (active) setMailStatus("Reminder email scheduled.");
+              // Only the next fresh queue read may announce acceptance. An
+              // edit during this request leaves its newer revision pending.
             } catch {
               mailBackoff = Date.now() + 30_000;
               if (active)
@@ -116,7 +144,10 @@ export function ReminderAlerts() {
           })();
         }
       } catch {
-        /* Retry storage when a blocked tab closes or storage returns. */
+        if (active && ownerKey())
+          setMailStatus(
+            "Couldn't check email schedules. Keep Morning open to retry.",
+          );
       } finally {
         checking = false;
         if (active) {
@@ -143,8 +174,18 @@ export function ReminderAlerts() {
       window.clearTimeout(timer);
       timer = window.setTimeout(check, 0);
     }
+    function changed() {
+      changes++;
+      if (ownerKey()) setMailStatus("Checking reminder email changes…");
+      wake();
+    }
+    function storageChanged(event: StorageEvent) {
+      if (event.key === "morning.reminder-change" || event.key === null)
+        changed();
+    }
     wake();
-    window.addEventListener("morning-reminder-change", wake);
+    window.addEventListener("morning-reminder-change", changed);
+    window.addEventListener("storage", storageChanged);
     window.addEventListener("focus", wake);
     window.addEventListener("online", wake);
     document.addEventListener("visibilitychange", wake);
@@ -153,7 +194,8 @@ export function ReminderAlerts() {
     return () => {
       active = false;
       window.clearTimeout(timer);
-      window.removeEventListener("morning-reminder-change", wake);
+      window.removeEventListener("morning-reminder-change", changed);
+      window.removeEventListener("storage", storageChanged);
       window.removeEventListener("focus", wake);
       window.removeEventListener("online", wake);
       document.removeEventListener("visibilitychange", wake);
@@ -175,6 +217,24 @@ export function ReminderAlerts() {
       setSoundError(true);
     }
   }
+  async function dismiss() {
+    setDismissError("");
+    try {
+      await dismissReminderAlerts(alerts);
+      setAlerts((previous) =>
+        previous.filter(
+          (item) =>
+            !alerts.some(
+              (dismissed) =>
+                dismissed.id === item.id && dismissed.dueAt === item.dueAt,
+            ),
+        ),
+      );
+      setSoundError(false);
+    } catch {
+      setDismissError("Couldn't dismiss these reminders. Please retry.");
+    }
+  }
   return (
     <>
       {mailStatus && (
@@ -193,17 +253,11 @@ export function ReminderAlerts() {
           <Button variant="ghost" size="sm" onClick={() => void ring()}>
             Play chime
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setAlerts([]);
-              setSoundError(false);
-            }}
-          >
+          <Button variant="ghost" size="sm" onClick={() => void dismiss()}>
             Dismiss
           </Button>
           {soundError && <p>Sound is unavailable on this device.</p>}
+          {dismissError && <p role="alert">{dismissError}</p>}
         </Alert>
       )}
     </>

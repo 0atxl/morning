@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
-import { IDBFactory, IDBObjectStore as FakeObjectStore } from "fake-indexeddb";
+import {
+  IDBFactory,
+  IDBKeyRange as FakeKeyRange,
+  IDBObjectStore as FakeObjectStore,
+} from "fake-indexeddb";
 import {
   addGuestContact,
+  acknowledgeReminderMail,
   commitCommand,
   loadWorkspace,
+  dismissReminderAlerts,
+  pollReminders,
   recordsForCommand,
   selectWorkspaceSession,
   storeTurn,
@@ -20,17 +27,86 @@ const originalFactory = Object.getOwnPropertyDescriptor(
   globalThis,
   "indexedDB",
 );
-beforeEach(() =>
+const originalKeyRange = Object.getOwnPropertyDescriptor(
+  globalThis,
+  "IDBKeyRange",
+);
+beforeEach(() => {
   Object.defineProperty(globalThis, "indexedDB", {
     value: new IDBFactory(),
     writable: true,
     configurable: true,
-  }),
-);
+  });
+  Object.defineProperty(globalThis, "IDBKeyRange", {
+    value: FakeKeyRange,
+    configurable: true,
+  });
+});
 afterEach(() => {
   if (originalFactory)
     Object.defineProperty(globalThis, "indexedDB", originalFactory);
   else Reflect.deleteProperty(globalThis, "indexedDB");
+  if (originalKeyRange)
+    Object.defineProperty(globalThis, "IDBKeyRange", originalKeyRange);
+  else Reflect.deleteProperty(globalThis, "IDBKeyRange");
+});
+
+test("background polls preserve a due alert; foreground chimes once and dismissal survives reload", async () => {
+  const {
+    records: [saved],
+  } = await commitCommand(request, [reminder]);
+  assert.equal(saved.kind, "reminder");
+  const now = Date.parse(reminder.due_at);
+  const background = await pollReminders(now);
+  assert.equal(background.due.length, 1);
+  assert.equal(background.ring.length, 0);
+  const tabs = await Promise.all([
+    pollReminders(now, () => true),
+    pollReminders(now, () => true),
+  ]);
+  assert.equal(tabs.flatMap((tab) => tab.ring).length, 1);
+  assert.equal(tabs.flatMap((tab) => tab.due).length, 2);
+  await loadWorkspace();
+  assert.equal((await pollReminders(now)).due.length, 1);
+  await dismissReminderAlerts([saved as StoredReminder]);
+  await loadWorkspace();
+  assert.equal((await pollReminders(now)).due.length, 0);
+  if (saved.kind !== "reminder") return;
+  await updateResult({ ...saved, dueAt: new Date(now + 60_000).toISOString() });
+  const rescheduled = await pollReminders(now + 60_000, () => true);
+  assert.equal(rescheduled.due.length, 1);
+  assert.equal(rescheduled.ring.length, 1);
+});
+
+test("acknowledging an older mail request cannot accept a newer edit", async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      localStorage: { getItem: () => "fixture-owner-key", setItem: () => {} },
+      dispatchEvent: () => true,
+    },
+  });
+  try {
+    const {
+      records: [saved],
+    } = await commitCommand(request, [reminder]);
+    const first = (await pollReminders(0)).pending[0];
+    assert.ok(first);
+    await updateResult({ ...saved, title: "A newer title" });
+    const edited = (await pollReminders(0)).pending[0];
+    assert.ok(edited.revision > first.revision);
+    await acknowledgeReminderMail(first);
+    assert.deepEqual((await pollReminders(0)).pending, [edited]);
+    await acknowledgeReminderMail(edited);
+    const accepted = await pollReminders(0);
+    assert.equal(accepted.hasMail, true);
+    assert.deepEqual(accepted.pending, []);
+  } finally {
+    if (originalWindow)
+      Object.defineProperty(globalThis, "window", originalWindow);
+    else Reflect.deleteProperty(globalThis, "window");
+  }
 });
 
 function legacyDatabase(record: StoredReminder, receipt: boolean) {

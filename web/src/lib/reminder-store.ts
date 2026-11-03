@@ -456,8 +456,13 @@ export async function addGuestContact(
 }
 
 function signalReminderChange() {
-  if (typeof window !== "undefined")
-    window.dispatchEvent(new Event("morning-reminder-change"));
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event("morning-reminder-change"));
+  try {
+    window.localStorage.setItem("morning.reminder-change", crypto.randomUUID());
+  } catch {
+    // Same-tab events and periodic polling still work without localStorage.
+  }
 }
 
 function queueOwnerMail(tx: IDBTransaction, reminder: StoredReminder) {
@@ -484,14 +489,17 @@ export async function acknowledgeReminderMail(job: MailSchedule) {
       if (read.result?.revision === job.revision) store.delete(key);
     };
   });
+  signalReminderChange();
 }
 
-// One read/write transaction claims each occurrence across all tabs. The due
-// timestamp, rather than a single flag, also covers edits that reschedule it.
-export async function pollReminders(now: number) {
+// Alerts remain pending until dismissed. Only an eligible foreground tab may
+// claim a chime; the timestamp also covers edits that reschedule a reminder.
+export async function pollReminders(now: number, canRing = () => false) {
   const due: StoredReminder[] = [];
+  const ring: StoredReminder[] = [];
   let next = now + 60_000;
   let pending: MailSchedule[] = [];
+  let hasMail = false;
   await writeWorkspace(["reminders", "settings"], (tx) => {
     const settings = tx.objectStore("settings");
     const mail = settings.getAll(IDBKeyRange.bound("mail:", "mail;"));
@@ -501,21 +509,38 @@ export async function pollReminders(now: number) {
     const records = tx.objectStore("reminders").getAll();
     records.onsuccess = () => {
       for (const record of records.result as StoredReminder[]) {
+        if (record.mailRevision) hasMail = true;
         const time = Date.parse(record.dueAt);
         if (!Number.isFinite(time)) continue;
         if (time > now) {
           next = Math.min(next, time);
           continue;
         }
-        const key = "rang:" + record.id;
-        const previous = settings.get(key);
-        previous.onsuccess = () => {
-          if (previous.result === time) return;
-          settings.put(time, key);
+        const dismissed = settings.get("dismissed:" + record.id);
+        dismissed.onsuccess = () => {
+          if (dismissed.result === time) return;
           due.push(record);
+          const key = "rang:" + record.id;
+          const previous = settings.get(key);
+          previous.onsuccess = () => {
+            if (previous.result === time || !canRing()) return;
+            settings.put(time, key);
+            ring.push(record);
+          };
         };
       }
     };
   });
-  return { due, next, pending };
+  return { due, ring, next, pending, hasMail };
+}
+
+export async function dismissReminderAlerts(alerts: readonly StoredReminder[]) {
+  await writeWorkspace(["settings"], (tx) => {
+    for (const reminder of alerts)
+      tx.objectStore("settings").put(
+        Date.parse(reminder.dueAt),
+        "dismissed:" + reminder.id,
+      );
+  });
+  signalReminderChange();
 }
