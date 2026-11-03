@@ -28,7 +28,19 @@ Saved records, contacts and manual edits stay in this browser profile. Quick Vie
 
 Reminder Quick View offers **Download .ics** and **Add to Google Calendar**. Both create a one-minute entry at the saved due time. Review and save or import it in your calendar. Calendar copies do not sync with later edits in Morning.
 
-The backend also implements calendar-event responses and meeting minutes. Their browser recording and event-scheduling flows are pending. Search, packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
+The backend also implements calendar-event responses and meeting minutes. Their browser recording and event-scheduling flows are pending. This branch adds read-only lookup providers and a result validator; voice-command, conversation storage and dashboard integration for search are still pending. Packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
+
+## Read-only lookup setup
+
+The provider layer supports hotel and general web search through [Tavily's hosted MCP](https://docs.tavily.com/documentation/mcp), news search, [Open-Meteo current weather](https://open-meteo.com/en/docs), and city time from the server clock and IANA time zones. It is not yet connected to the mic on this branch. After integration, guests use Morning's server credentials and need no MCP client, provider account or key.
+
+For local setup, add `TAVILY_API_KEY` to `server/.env`. On the existing Azure VM, edit **`/etc/morning/server.env`** with `sudoedit` and add `TAVILY_API_KEY` there. The `morning-api.service` systemd unit reads that file. Restart it with `sudo systemctl restart morning-api.service` when enabling the reviewed release. Keep the file's existing `root:morning` ownership and `0640` permissions. This is VM configuration, not an Azure App Service setting or GitHub Actions secret. Never put the key in a `VITE_` variable, browser storage or an MCP URL.
+
+Go connects to `https://mcp.tavily.com/mcp/` with `Authorization: Bearer <TAVILY_API_KEY>` and calls only `tavily_search`. No additional Go modules are required, so Azure can continue compiling with `GOPROXY=off`. Open-Meteo weather and city-time resolution do not use a Tavily key. Missing keys and provider failures return fixed, displayable errors.
+
+Lookups have a 12-second deadline, at most three sources, and separate per-minute budgets for search and weather/time. Each budget permits four lookups per visitor and 40 across the service. News requested for today uses midnight through the lookup's start in the visitor's IANA timezone, within a Tavily one-day search. Stories without a confirmed publication timestamp, outside that window or dated in the future are excluded. A source's publication time, weather's local data time and Morning's lookup time remain separate. Some MCP response formats omit publication dates; those results cannot establish today's news and produce an honest empty result. Live provider compatibility still needs verification.
+
+The result contract and integration boundary are described in the [API guide](server/README.md#read-only-lookup-provider-layer).
 
 See the [web guide](web/README.md) for recorder controls, storage and retry behavior, the [API guide](server/README.md) for endpoint contracts, and the [deployment guide](deploy/README.md) for Azure setup and rollback.
 

@@ -399,3 +399,47 @@ The custom test transport returns local `testdata/` fixtures and cannot reach li
 Smoke and browser E2E verification require a separately approved, manually dispatched GitHub Actions run with the cases, commit and live-provider usage stated. Backend fixture tests do not verify microphone capture, IndexedDB transactions, duplicate saves after an edit, or browser speech.
 
 The correction fixture cases cover the Friday time change, replay of the same request, missing context, vague times, invalid provider actions and malformed reminder snapshots. The backend stops at the validated response.
+
+## Read-only lookup provider layer
+
+This branch supplies providers, fixture definitions and a browser result validator. The `/api/commands` handler and its Groq intent schema have not been changed. Lookup requests are not exposed by a new endpoint. Connecting the existing voice flow, storing snapshots in conversations and showing sources in the dashboard remain pending.
+
+Initialize one `newLookupService(providers, clock)` per API instance, then call its `lookup` method only for a validated, standalone read-only intent. Use `clientAddress(request)` for the visitor identity. Never initialize a new service per request, which would reset its rate limits. The method accepts these arguments:
+
+```json
+{"kind":"hotels","terms":"","place":"Jaipur railway station","today":false}
+```
+
+Kinds are `hotels`, `weather`, `news`, `web` and `time`. Weather and time use only `place`. News and web require concise `terms`; news can also supply a location and `today`. Hotel search uses only the named city or landmark. Send these minimal arguments to providers, never the conversation, contacts, reminder IDs or a visitor identity. Groq selects exact evidence from bounded public snippets. Go checks those excerpts against the returned sources, builds the result, and never converts source data into actions or another tool request. Hotel results omit distances, rates and availability.
+
+`lookupOutcome` contains either `lookup` or a `clarification` with `lookup_context`. When location is missing, the question is `Which city or landmark?`. Carry the context in that conversation and pass the spoken reply to `withLookupPlace`. For an ambiguous city, the context also retains the city so a region such as `Illinois` completes `Springfield, Illinois`. A country with multiple time zones requires a city. Use the actual server clock for weather freshness, news windows and time answers.
+
+An answered snapshot has this shape. The example is synthetic:
+
+```json
+{
+  "kind": "weather",
+  "query": "Pune",
+  "status": "answered",
+  "answer": "Pune, Maharashtra, India: partly cloudy, 24.5 °C, as of 8:45 AM on 3 November local time, Asia/Kolkata. Weather by Open-Meteo.",
+  "speech": "Pune, Maharashtra, India: partly cloudy, 24.5 °C, as of 8:45 AM on 3 November local time, Asia/Kolkata. Weather by Open-Meteo.",
+  "sources": [{
+    "title": "Current weather from Open-Meteo",
+    "url": "https://open-meteo.com/",
+    "publisher": "Open-Meteo"
+  }],
+  "looked_up_at": "2026-11-03T03:30:00Z",
+  "timezone": "Asia/Kolkata",
+  "data_time": "2026-11-03T08:45:00+05:30"
+}
+```
+
+Empty results use `status: "empty"`, an honest answer and `sources: []`. Source rows contain `title`, safe HTTP(S) `url`, and `publisher`, with optional exact `excerpt` and `published_at`. Tavily publisher labels use source hostnames. News also includes `window_start`, `window_end` and the visitor's `timezone`; only stories with a timestamp in that window survive. Weather credits Open-Meteo and GeoNames and returns local `data_time`. Time answers use the server clock in the resolved IANA zone.
+
+The frontend's standalone `parseLookupResult` validates this snapshot without performing I/O. The future command parser must reject responses combining a lookup with write actions. Store the entire snapshot with the originating command before speaking its `speech`, which is capped at 240 characters. History and Play reply must only read the stored snapshot. Render source text as text and links through `safeLookupLink`, with `rel="noopener noreferrer"` for new tabs. Opening a source does not authorize Morning to fetch it or execute its contents.
+
+Provider errors are `lookupError` values with a fixed `Code`, `Message`, `Retryable` and optional `RetryAfter`. These include missing search configuration, denied provider access, quota/rate limits, timeouts, invalid responses and outages. The command adapter must preserve the transcript, return its command ID, map these to the existing API error envelope, and forward `Retry-After` when set. Search and weather/time have independent limiters. The existing reminder, draft and speech paths must remain independent of lookup failures.
+
+See the [public setup instructions](../README.md#read-only-lookup-setup) for the optional server-only Tavily key and Azure VM file. The MCP client supports JSON and SSE responses with bounded bodies and blocks redirects. It ignores server instructions and requests. Only protocol initialization and the search tool are sent. No MCP SDK or other Go dependency is needed.
+
+Fixture definitions cover the provider transport, grounded hotel/Go results, location continuation, today filtering, weather units and data time, ambiguity, Tokyo time, quota/outage redaction, public rate limits, unsafe links, malformed output and attempted model tool calls. Browser fixtures cover snapshot validation and serialization. They have not been executed. The manual **Read-only lookup fixtures** workflow can run them at an approved commit without live keys. It has no push, PR, schedule or deployment trigger. Browser interaction, source quality and live provider behavior require separate verification after integration.
