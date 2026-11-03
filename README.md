@@ -1,10 +1,12 @@
 # Morning
 
-[Project documentation](docs/PROJECT.md) covers the guest walkthrough, code trace, solo contribution, and verification evidence.
-
 Morning is a browser-based voice assistant for saving reminders and editable email drafts. Open the [landing page](https://morning.atuls.me/) or go straight to the [guest workspace](https://morning.atuls.me/app). No account is required.
 
-Try “Remind me in ten minutes to check the oven” or “Draft Priya an email asking her to confirm the revised timeline, and remind me Friday at ten AM to follow up.” Priya is a labeled example contact. You can add your own contacts in the workspace.
+**[Project documentation](docs/PROJECT.md)** follows the example below through the code and includes Atul Kumar's solo contribution and the verified Actions runs.
+
+> Draft Priya an email asking for the slides, and remind me in ten minutes to follow up.
+
+Click **Talk to Morning**, say the request, then click **Stop listening**. Priya Shah is a sample contact. The draft opens for review, and the reminder appears beneath the transcript.
 
 ## Run locally
 

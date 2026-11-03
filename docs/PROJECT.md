@@ -1,197 +1,148 @@
 # Morning project documentation
 
-Morning is a browser-based voice assistant that turns a spoken request into a saved reminder and an editable email draft. Open [Morning](https://morning.atuls.me/), choose **Try Morning**, and use the guest dashboard without an account or your own API keys.
+Morning is a browser-based voice assistant. Open [Morning](https://morning.atuls.me/), choose **Try Morning**, then click **Talk to Morning** in the guest dashboard. Allow microphone access, say the sentence below, and click **Stop listening**.
 
-> "Draft Priya an email asking for the slides, and remind me in ten minutes to follow up."
+> Draft Priya an email asking for the slides, and remind me in ten minutes to follow up.
 
-That sentence contains two jobs. A draft without the follow-up loses the second intention; a reminder without the draft leaves the first job undone. Morning's connected command flow interprets both, validates the result, and saves them together before speaking a confirmation. It prepares email but never sends it. A reminder currently stores a due time; it does not deliver an alert.
+I built Morning because those two jobs belong together. If the assistant writes the email but drops the reminder, I still have to remember to follow up. If it saves just the reminder, I come back in ten minutes to an email I still have to write. Morning saves both results together and lets me open each one.
 
-I am Atul Kumar, the solo builder. I scoped the product, directed the voice interaction and UI, integrated the browser with the Go API and speech providers, and coordinated debugging and deployment with AI coding assistants. [My contribution](#my-contribution) explains that division of work.
-
-This document describes source inspected on `main` at [`7ac288f5466248fe4905bf6e2d2cdeef8e105c9c`](https://github.com/0atxl/morning/commit/7ac288f5466248fe4905bf6e2d2cdeef8e105c9c), on 3 November 2026. Connected behavior below means implemented in that checkout, not independently verified with a live microphone. See [verification and limitations](#verification-and-limitations) for the actual evidence.
-
-## Why I built it
-
-Speaking a request is useful only if the assistant preserves what the person asked for and produces something they can inspect. Morning focuses on a small, visible result: a draft to review and a reminder with an explicit date and time. Guest access removes account setup from that first interaction. Browser storage lets the user keep and edit the results without adding an account database.
-
-The compound example is the central product decision. Morning must finish both parts or ask a question before saving either. The user should not have to infer which half of a sentence the assistant remembered.
+I'm Atul Kumar, the solo builder. I chose the guest workflow, designed the voice interaction, and coordinated the integration of the browser, Go API and speech services through deployment. [My contribution](#my-contribution) describes where I used AI coding assistants.
 
 ## Try the guest dashboard
 
-1. Start at [https://morning.atuls.me/](https://morning.atuls.me/) and select **Try Morning**. It opens `/app`, the guest workspace. A direct visit to [the dashboard](https://morning.atuls.me/app) opens the same route.
-2. Click the orb, mic, or **Talk to Morning** control and allow microphone access. Wait for the listening state. On a focused dashboard, holding the physical **Right Ctrl** key is another way to record; releasing it finishes that held recording. Releasing during permission or connection setup cancels it.
-3. Say the example above. Priya is the sample contact **Priya Shah**, with the reserved example address `priya.shah@example.com`. **Contacts** at the bottom shows the sample address book and lets you add your own contacts.
-4. Read the live captions beneath the orb. Interim words can change. A pause does not submit the request. Click **Stop listening** after the whole sentence, or release Right Ctrl if you started by holding it.
-5. After processing and storage complete, Morning shows saved result rows beneath the transcript and automatically opens the draft in Quick View. Close it to see both the draft and reminder. Open either row to inspect it, including the reminder's local due time. History starts collapsed and shows earlier command transcripts.
-6. When supported, the browser speaks "Draft saved" and a reminder confirmation with its stored due time. If speech fails, the saved rows remain and **Retry speech** retries speech alone. This is confirmation of storage, not a promise that an alert will sound later.
-7. In the draft's Quick View, choose **Edit**, change the recipient, subject, or message, then **Save changes**. After refresh, the saved edit and reminder load from IndexedDB in the same browser profile and origin. Unsaved editor changes are not persisted. **Copy** and **Download** use the saved content; download produces plain text, not an email delivery.
-
-If multiple contacts match Priya, choose a name and address below the transcript. Neither result saves while that choice is pending. For a missing contact, add it through Contacts and record the complete revised command. A missing or ambiguous time also requires a complete revised recording. Morning does not carry a general spoken conversation across commands.
-
-On a capture, network, or storage failure, read the error beside the retained captions and use **Retry**. These paths are implemented but remain unverified with live providers. Stay in **Guest workspace** when trying real commands. **Design preview** uses sample states whose edits reset on reload.
+1. Choose **Try Morning** on the landing page. It opens the guest workspace at `/app`. You can use your microphone without an account or personal API keys. Priya Shah is already in **Contacts**, labeled as a sample contact with the address `priya.shah@example.com`.
+2. Click the orb or its **Talk to Morning** label. Once the control reads **Stop listening**, say the slides request above. Live captions appear below the orb. Pause after "slides" if you like. The interim words may change as you speak.
+3. Click **Stop listening** after "follow up." For push-to-talk on a focused dashboard, hold the physical **Right Ctrl** key instead and release it when you finish. Releasing during mic permission or connection setup cancels that hold.
+4. After the save, the draft opens in **Quick View**. The browser says "Draft saved" and reads the reminder title and due time if speech is available. Close Quick View to see both rows beneath the transcript. Open the reminder row to see when the follow-up is due. If playback fails, **Retry speech** repeats the confirmation without submitting the command again.
+5. Open the draft, choose **Edit**, change the subject or message, then select **Save changes**. Refresh the guest dashboard and open the draft again. In the same browser profile, the saved wording and the separate reminder load from IndexedDB. You can copy or download the draft as plain text. Sending it is up to you. The reminder stores the due time but has no alert.
 
 ## Follow one command through the code
 
-The frontend uses React, TypeScript, Vite, and shadcn/ui components. The Go API uses the standard library. Deepgram transcribes audio, Groq interprets the completed text, and IndexedDB holds the guest's records.
+The React dashboard captures audio and stores the results. The Go API gets a temporary transcription token and checks the actions Groq proposes. This trace follows app commit `7ac288f`, the revision in the [Azure deployment run](https://github.com/0atxl/morning/actions/runs/41641704878).
 
 ```mermaid
-flowchart LR
-  Mic[Browser microphone] -->|Audio over WebSocket| DG[Deepgram Nova-3]
-  DG -->|Live and final captions| UI[Guest dashboard]
-  UI -->|Final text and relevant context| Go[Go API]
-  Go -->|Structured interpretation request| Groq[Groq]
-  Groq --> Go
-  Go -->|Validated actions or question| UI
-  UI -->|Atomic save| DB[(IndexedDB)]
-  DB -->|Commit complete| Speech[Browser speech synthesis]
+sequenceDiagram
+    participant B as Guest dashboard
+    participant G as Go API
+    participant D as Deepgram
+    participant M as Groq
+    B->>G: Request voice token
+    G->>D: Request short-lived grant
+    D-->>G: Grant
+    G-->>B: Token and socket URL
+    B->>D: Stream microphone audio
+    D-->>B: Interim and final captions
+    B->>G: Final text, command ID, clock, matching contacts
+    G->>M: Interpret text with time and contact context
+    M-->>G: Proposed actions
+    G-->>B: Validated actions or a question
+    Note over B: On success, commit to IndexedDB, then speak
 ```
 
-### Capture and finalize the sentence
+### Capture the complete sentence
 
-[`VoiceCapture`](../web/src/lib/voice-capture.ts) obtains the microphone through `getUserMedia`, selects a supported MediaRecorder format, then requests `POST /api/voice/token`. The [Go token handler](../server/api.go) uses the permanent server credential to request a short-lived Deepgram grant through [`grantToken`](../server/providers.go). The browser receives a temporary token, validates the returned destination, and connects directly to Deepgram's Nova-3 WebSocket with bearer authentication. Permanent provider keys never enter the frontend.
+`VoiceCapture` obtains the mic with `getUserMedia` and calls `POST /api/voice/token`. Go requests a 30-second grant with its server-side key. The browser checks the returned WebSocket destination and uses the grant to stream MediaRecorder chunks directly to Deepgram Nova-3. Morning's Go process never receives the audio. [Capture code](../web/src/lib/voice-capture.ts) · [Token and destination checks](../web/src/lib/command-api.ts) · [Go grant request](../server/providers.go)
 
-MediaRecorder sends audio chunks every 250 milliseconds. [`TranscriptBuffer`](../web/src/lib/transcript.ts) keeps finalized segments by audio position and replaces interim captions. Repeated words at different positions remain meaningful; replayed result frames do not become extra words.
+A pause after "slides" can produce a final caption for the first half of the sentence. Submitting it immediately would lose the follow-up. Morning keeps final segments in audio order and replaces interim text as Deepgram revises it. Stop flushes the last audio chunk and sends `CloseStream`. Only finalized words, end metadata and a clean socket close let capture finish. An interrupted stream leaves the words on screen with a retry. [Transcript buffer](../web/src/lib/transcript.ts) · [Capture finalization](../web/src/lib/voice-capture.ts)
 
-Stop flushes the final recorder chunk before sending `CloseStream`. Capture waits for final results, metadata, and a clean WebSocket close. Unfinalized words or an incomplete close produce an error rather than submitting a potentially incomplete command.
+### Interpret the request and check both actions
 
-### Interpret and validate both actions
+The dashboard creates a `command_id` and posts the final transcript, current time, IANA timezone and matching contacts to `/api/commands`. For "Priya", the local lookup supplies her ID, name and email address. Go sends the text, localized time, timezone and matching contact data to Groq. It keeps the command ID out of the model's input. Groq receives the transcript as data and returns structured JSON. It has no tools to write records or send email. [Browser request](../web/src/hooks/use-reminder-flow.ts) · [Contact lookup](../web/src/lib/contacts.ts) · [Groq request and schema](../server/providers.go)
 
-[`useReminderFlow`](../web/src/hooks/use-reminder-flow.ts) creates one `command_id` after transcription finishes. It sends the final sentence, original `now`, IANA timezone, and [matching local contacts](../web/src/lib/contacts.ts) to `POST /api/commands`. For the example, the contact snapshot includes Priya Shah's ID, name, and example address.
+Suppose the browser submits the command at 09:00 in Kolkata. The expected `draft_email` points to `sample-priya-shah` and contains a subject and body asking for the slides. The expected `create_reminder` has a follow-up title and a due time of 09:10 that day, with the local offset `+05:30`. Groq supplies the wording and resolves "in ten minutes." Go checks the recipient, action fields, future timestamp and timezone offset before echoing the original command ID with the result. [Command handler](../server/api.go) · [Action validation](../server/validation.go)
 
-The [command handler](../server/api.go) validates the request and calls [Groq interpretation](../server/providers.go), using `openai/gpt-oss-20b` with a strict JSON schema. The transcript and context are a separate user data message. The model has no action-execution tools and cannot save records or send mail.
+Two failures need checks beyond the JSON schema.
 
-The intended result is one `draft_email` bound to Priya's supplied contact ID and one `create_reminder`. For an illustrative request timestamp of `2026-11-03T09:00:00+05:30` in `Asia/Kolkata`, ten minutes means a due time of `2026-11-03T09:10:00+05:30`. Draft wording is generated, not a fixed template or a guaranteed verbatim response.
+- **Two people named Priya.** If the guest has also added a second Priya, Go derives matching choices from the contacts supplied with the command. The dashboard shows names and addresses and saves neither result yet. Selecting a contact resubmits the original ID, transcript, clock and contacts with the chosen ID. Time spent choosing cannot move the original ten-minute reference point. For a missing contact, add the person and record the full command again. [Recipient resolution](../server/contacts.go) · [Selection and resubmission](../web/src/lib/command-api.ts)
+- **Only half the request comes back.** A single well-formed reminder can pass the schema. Go checks explicit English patterns such as "draft … an email … and remind me" in either order. A missing action for that wording is an error and nothing saves. A clarification also carries zero actions. The guard covers recognized phrasing. It cannot prove the meaning of every paraphrase. [Completeness check](../server/validation.go) · [Partial-response fixture cases](../server/drafts_test.go)
 
-[Validation](../server/validation.go) checks supported action types, counts, fields, text limits, future due times, and timezone offsets at the due instant. [Contact resolution](../server/contacts.go) checks membership and ambiguity against the request's contacts. A completeness guard rejects a one-action response for explicit compound wording such as this example. A clarification contains zero actions.
+### Save once and speak the result
 
-Groq computes the requested time. Go checks constraints but does not independently prove that every natural-language time expression was interpreted correctly.
+The browser checks the echoed ID and action list, then resolves the draft's recipient against the contacts it originally supplied. `commitCommand` writes the draft, reminder and a receipt keyed by command ID in one IndexedDB transaction. Only the transaction's completion triggers the result rows and browser speech synthesis. The spoken time comes from the saved reminder. [Response parser](../web/src/lib/command-api.ts) · [Storage transaction](../web/src/lib/reminder-store.ts) · [Confirmation text and playback](../web/src/hooks/use-reminder-flow.ts)
 
-### Save, render, then speak
+A retry after a dropped response could otherwise create a second reminder. The dashboard reuses the request ID for a network retry. If interpretation succeeded but storage failed, it retries the cached actions locally. An existing receipt returns the saved records, including later draft edits, without a second success announcement. Recording the sentence again starts a new command. [Retry handling](../web/src/hooks/use-reminder-flow.ts) · [Storage fixture cases](../web/tests/workspace-storage.test.ts)
 
-The [browser response parser](../web/src/lib/command-api.ts) verifies the command ID, action types, fields, and recipient against the pending request. It currently accepts reminder creation and email drafts only.
-
-[`commitCommand`](../web/src/lib/reminder-store.ts) writes the reminder, draft, and unique command receipt in one IndexedDB read/write transaction. The reminder uses the command ID; the draft uses `draft:` plus that ID. If any write fails, the transaction aborts. A receipt for an already completed command returns the existing records, including later edits.
-
-Only the transaction's `oncomplete` resolves a successful save. The [flow hook](../web/src/hooks/use-reminder-flow.ts) then renders results, opens Quick View, and calls `SpeechSynthesisUtterance` for a newly saved command. Replays stay silent. [Quick View](../web/src/components/result-quick-view.tsx) persists manual edits through the same local store and provides copy and [plain-text export](../web/src/lib/results.ts).
-
-### What crosses the network
-
-Microphone audio goes directly from the browser to Deepgram. The Go server requests the temporary token but does not receive that audio. Final command text, time, timezone, and relevant matching contact records go to Go and then to Groq for interpretation. This is cloud processing, not offline transcription.
-
-Reminders, drafts, contacts, command receipts, and the transcript attached to saved results stay in this browser's IndexedDB. Manual draft edits are local; there is no account sync or server record database. Clearing site data or changing browser profiles loses access to those records. Captured audio retained for Retry is held in memory, not saved to IndexedDB.
-
-The current dashboard passes confirmation text to the browser's speech engine. Its processing depends on the browser and installed voice; Morning does not call ElevenLabs in this flow. The optional backend speech endpoint would send confirmation text to ElevenLabs if a client called it.
+IndexedDB holds the guest address book, reminders, drafts, receipts and the transcript attached to each saved result. Manual edits stay on this site in this browser profile. Clearing site data removes those records. During capture, audio retained for a retry stays in memory. For spoken confirmation the dashboard passes text to the browser's speech engine, whose voice can depend on the device. [Quick View editor](../web/src/components/result-quick-view.tsx) · [Browser store](../web/src/lib/reminder-store.ts)
 
 ## Feature status
 
-"Connected" means the guest dashboard calls the relevant code. It does not imply live browser verification.
+The table describes what the guest UI calls in the shipped source. The verification record below identifies which paths have run in CI. [Guest dashboard](../web/src/App.tsx) · [Browser action types](../web/src/lib/command-api.ts) · [Go routes](../server/api.go)
 
-| Capability | Current status | Exact boundary |
+| Capability | Where it works | Behavior and limits |
 | --- | --- | --- |
-| Reminder creation | Connected | Stores a title, due time, and timezone; Quick View supports manual edits. No due-time alerts, background notifications, or closed-tab delivery. |
-| Email drafts | Connected | Creates, edits, copies, and downloads plain-text drafts. No sending endpoint or mailbox integration. |
-| Contact clarification | Connected | Local sample/custom contacts, matching-contact selection, and zero writes until resolved. Missing contacts require adding one and recording again. |
-| Spoken confirmation | Connected | Browser speech after a new storage commit; separate speech retry. |
-| Spoken reminder corrections | Backend only | [`corrections.go`](../server/corrections.go) supports an existing reminder context and `reschedule_reminder`. The browser sends no such context and rejects that action type. PEN is a design preview. |
-| Calendar export | Backend response only | The command API can return a validated calendar event. The dashboard neither accepts that action nor creates an `.ics` file. Plain-text result download is separate. |
-| Meeting minutes | Backend only | [`POST /api/minutes`](../server/minutes.go) returns summary, decisions, action items, and open questions from a completed transcript. No connected meeting capture/editor/export flow. PAD is a design preview. |
-| ElevenLabs playback | Backend only | [`POST /api/speech`](../server/speech.go) can return Flash v2.5 MP3 audio when configured. Dashboard playback uses browser speech instead. |
-| Design previews | Sample UI | [`src/fixtures`](../web/src/fixtures/) supplies isolated states and Activity shapes without provider calls or IndexedDB writes. |
-| Search | Not implemented | No connected dashboard search or backend search endpoint. |
-
-## Technical decisions and failure cases
-
-### A pause must not split a compound request
-
-Submitting when Deepgram finalizes a phrase could save the draft before the speaker says "and remind me...". Morning makes Stop the command boundary. It accumulates finalized segments and waits for stream completion before calling Go once. The tradeoff is an explicit finish gesture and a finalization wait. The implementation is in [capture](../web/src/lib/voice-capture.ts) and [transcript buffering](../web/src/lib/transcript.ts).
-
-### Two contacts named Priya must not become a guessed recipient
-
-A model might pick the first address and silently bind the draft to the wrong person. Go [matches complete name words](../server/contacts.go), derives choices from the supplied address book, and returns a question with zero actions when multiple contacts match. The browser resubmits the selected contact with the original command ID, transcript, time, timezone, and contact snapshot. Go rejects a draft for a different recipient. This keeps the relative reminder time anchored to the original request while the user chooses.
-
-### A valid JSON response can still omit half the work
-
-A schema can accept a single reminder even when the user also requested a draft. The [completeness guard](../server/validation.go) checks explicit English compound patterns in either order, independently of the model's action list, and rejects a missing draft or reminder. Quoted email content is excluded from that pattern check. Prompt instructions ask for clarification if any part is ambiguous. This is a bounded guard for recognized wording, not a general proof of semantic completeness for every paraphrase.
-
-### Retry must preserve one reminder and the edited draft
-
-A lost response or failed save can tempt an app to interpret again and insert duplicates. Morning [retains the pending request](../web/src/hooks/use-reminder-flow.ts) for HTTP retries and caches a successful interpretation for storage-only retries. The [atomic transaction and receipt](../web/src/lib/reminder-store.ts) make a completed command authoritative. Replays return saved records without overwriting draft edits or announcing another success. Go itself keeps no command history, so an HTTP retry can call Groq again; the durable duplicate-save protection belongs to the browser.
+| Reminders | Guest dashboard | Create a reminder and edit its title or due time in Quick View. Morning has no due-time alarm or background notification. |
+| Email drafts | Guest dashboard | Review, edit, copy or download an unsent draft. Morning has no mail delivery integration. |
+| Contact clarification | Guest dashboard | Choose among matching contacts before saving. A missing contact or missing reminder time requires a complete revised recording. |
+| Spoken confirmation | Guest dashboard | Hear the browser read back a new save and retry playback separately. |
+| Spoken reminder corrections | Go API only | The API accepts an existing reminder context and can return `reschedule_reminder`. The dashboard edits reminders by hand and supplies no such context. [Correction handler](../server/corrections.go) |
+| Calendar export | Go API event data only | Go can return `create_calendar_event` with start, end and timezone. The dashboard produces no `.ics` file and books no event. [Event validation](../server/validation.go) |
+| Meeting minutes | Go API only | `POST /api/minutes` accepts a completed transcript and returns a summary, decisions, action items and open questions. The dashboard has no meeting recorder, minutes editor or minutes download. [Minutes handler](../server/minutes.go) |
+| ElevenLabs playback | Go API only | A configured `POST /api/speech` can return Flash v2.5 MP3 audio. The guest dashboard uses browser speech. [Speech handler](../server/speech.go) |
+| Design preview | Sample UI | PAD and PEN illustrate minutes and corrections in Activity. Preview controls use sample data. Edits reset on refresh. [Activity stages](../web/src/lib/execution.ts) · [Preview state](../web/src/fixtures/use-design-preview.ts) |
+| Search | Unavailable | Neither the guest dashboard nor the API implements search. |
 
 ## My contribution
 
-I am Atul Kumar, and Morning was a solo project. I chose the browser-first scope, guest access, and the compound draft-and-reminder interaction. I made the distinction between preparing an email and sending it, and between saving a reminder time and delivering an alert, part of the product boundary.
+I built Morning as a solo project. I scoped the first interaction around something a guest could inspect on screen. I chose live captions, an explicit finish gesture and Quick View so someone could see what the mic heard, decide when the request was complete and correct the saved draft before using it.
 
-I directed the voice and UI decisions: live captions, explicit Stop, the Right Ctrl hold interaction, visible saved results, editable Quick View, and speaking only after storage commits. I coordinated the frontend/backend contract, provider integration, local persistence, and deployment to the public domain.
+I coordinated the contract between the TypeScript client and the Go API, the Deepgram and Groq integrations, and the Azure release. My debugging work included tracing what happened when a pause split the captions, a model dropped half the command, or a save had to be retried. Those cases shaped when Morning asks a question, writes to storage and speaks.
 
-My debugging work focused on failure boundaries represented in the code: preserving the whole sentence across pauses, resolving ambiguous contacts, rejecting partial compound results, retaining captured words on failure, and avoiding duplicate writes on retry. I also coordinated source commits, build configuration, and Azure release provenance. These are implementation contributions; the verification record below limits what I claim has been exercised.
-
-I used AI coding assistants to help write and revise frontend and Go code, define fixtures, inspect integration issues, and prepare documentation and deployment changes. I made the product and scope decisions and directed that work. The assistants were tools in my solo workflow, not teammates. I do not claim that all generated code or all demo paths have been tested.
+I used AI coding assistants to help implement the frontend and backend, write fixtures, review integration issues and prepare deployment changes and documentation. I made the scope, interaction and release decisions.
 
 ## Run locally
 
-Prerequisites are Git, Go 1.22 or newer, Node.js 22.12 or newer with npm, and server-side Deepgram and Groq keys. Live microphone capture needs a supported browser with microphone permission on HTTPS or localhost.
+Use Git, Go 1.22 or newer, Node.js 22.12 or newer with npm, and a browser with microphone access on localhost or HTTPS. For the first terminal, clone the repo and prepare the server environment.
 
-Clone the public repository:
-
-```bash
+```sh
 git clone https://github.com/0atxl/morning.git
-cd morning
+cd morning/server
+[ -e .env ] || cp .env.example .env
 ```
 
-In the first terminal, copy the credential-free example and edit `server/.env` with your own keys. The shell explicitly loads the file; Go does not load it automatically.
+Edit `server/.env` with your own settings. The Go process reads its environment at startup. Keep credentials on the server.
 
-```bash
-cd server
-[ -e .env ] || cp .env.example .env
-# Edit .env before continuing.
+| Variable | Required for local startup? | Purpose |
+| --- | --- | --- |
+| `DEEPGRAM_API_KEY` | Yes | Grant short-lived transcription tokens. |
+| `GROQ_API_KEY` | Yes | Interpret voice commands and meeting transcripts. |
+| `LISTEN_ADDR` | Optional | Override the default API address of `127.0.0.1:8080`. |
+| `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | Optional, set together | Enable the server's MP3 speech endpoint. |
+
+In the same terminal, load the file and start Go.
+
+```sh
 set -a
 . ./.env
 set +a
 go run -buildvcs=false .
 ```
 
-From the repository root in a second terminal:
+In a second terminal opened at the cloned repository root, start the dashboard.
 
-```bash
+```sh
 cd web
 npm ci --ignore-scripts
 npm run dev
 ```
 
-Open the Vite URL, then `/app`. The [Vite configuration](../web/vite.config.ts) proxies `/api` to Go at `127.0.0.1:8080`. These are startup instructions, not verification runs performed for this document.
+Open the URL printed by Vite and choose **Try Morning**. Vite forwards `/api` to Go on its default address. [Server setup](../server/README.md#local-startup) · [Environment template](../server/.env.example) · [Web setup](../web/README.md#start-locally)
 
-| Environment variable | Requirement | Use |
-| --- | --- | --- |
-| `DEEPGRAM_API_KEY` | Required | Server-side key able to grant temporary transcription tokens. |
-| `GROQ_API_KEY` | Required | Server-side command and minutes interpretation. |
-| `LISTEN_ADDR` | Optional | Defaults to `127.0.0.1:8080`. |
-| `ELEVENLABS_API_KEY` | Optional | Enables backend MP3 speech together with the voice ID. |
-| `ELEVENLABS_VOICE_ID` | Optional | Voice for the optional backend speech endpoint. |
+## Deploy to Azure and identify the release
 
-No frontend provider key is required. Do not put credentials in `VITE_` variables or commit `.env`. See the [API setup and contracts](../server/README.md), [web setup and controls](../web/README.md), and [environment template](../server/.env.example).
+GitHub Actions builds on pushes to `main` that change the app, deployment files or deployment workflow. It also supports manual dispatch. The build compiles the Go Linux binary, type-checks TypeScript, builds the Vite assets and packages them with `deployment.json`. When production deployment is enabled, a separate job transfers that artifact to the Azure VM. The release receiver checks the commit and run URL, switches the active release and restarts the API. nginx serves the web files and proxies `/api` on the same origin. [Workflow](../.github/workflows/deploy.yml) · [Release receiver](../deploy/receive.py) · [Deployment setup and rollback](../deploy/README.md)
 
-## Deployment and commit provenance
-
-The [Build and deploy workflow](../.github/workflows/deploy.yml) runs for relevant application, deployment, or workflow changes pushed to `main`, or by manual dispatch. It compiles the Go Linux binary, installs npm dependencies with lifecycle scripts disabled, type-checks TypeScript, and builds Vite assets. It packages both with `deployment.json` containing the exact commit SHA, workflow run URL, and build time. These steps do not execute tests.
-
-When production deployment is enabled, Actions transfers that artifact to an Azure VM using a restricted deployment connection. The [release receiver](../deploy/receive.py) validates the package and provenance, activates the release, and restarts the API service. Failed service activation restores the prior release when available. Process activation is not an application health check.
-
-[nginx](../deploy/nginx.conf) serves the frontend and proxies `/api` to Go on the same origin. The public site uses HTTPS. Provider credentials stay in the service environment and outside release artifacts. The [deployment guide](../deploy/README.md) documents configuration, required GitHub secret/variable names, and rollback without exposing credential values here.
-
-To identify a release, compare the workflow summary with the public [deployment metadata](https://morning.atuls.me/deployment.json). That file names the activated app commit and its build run. A documentation-only commit does not trigger this workflow, so the public repository's newest SHA can differ from the deployed application's SHA. This documentation task did not request the live metadata or probe the app.
+To identify the deployed app, read `commit` in the site's deployment metadata and follow `workflow_run` to the Actions run that built it. A README or project-guide edit does not trigger an app deployment, so the newest documentation commit can differ from the active app commit. [Public deployment metadata](https://morning.atuls.me/deployment.json)
 
 ## Verification and limitations
 
-The following existing GitHub Actions logs were inspected for this document. All runs are from 3 November 2026. No new tests, builds, smoke checks, browser QA, benchmarks, or provider calls were executed for this documentation task.
+The public Actions history on 3 November 2026 records three runs. Compilation, service activation and fixture tests each establish something different.
 
-| Evidence | Revision actually covered | Scope and result |
+| Existing run | Commit covered | Recorded outcome |
 | --- | --- | --- |
-| [Backend fixture run 41622302698](https://github.com/0atxl/morning/actions/runs/41622302698) | `0b0f4038d2c9c39554c8498f4b1655cc106d31a8` | `go test -count=1 -v ./...` passed 12 top-level tests and 55 subtests, zero skips. Reminder contract, clarification, invalid requests/model output, provider failure fixtures, token grants/rate limits, and timezone validation. No live providers or frontend. The workflow's triggering SHA is `3dcb632`; checkout and the recorded tested SHA are `0b0f403`. |
-| [Build and deploy run 41637149423](https://github.com/0atxl/morning/actions/runs/41637149423) | `9eb9cd0b28b38e8a59dfa0b944769991e7364a0d` | Workflow succeeded, but app compilation and deployment were skipped because committed frontend source was absent. This is not evidence of a working release. |
-| [Build and deploy run 41641704878](https://github.com/0atxl/morning/actions/runs/41641704878) | `7ac288f5466248fe4905bf6e2d2cdeef8e105c9c` | Go compilation, TypeScript checking, Vite production build, artifact packaging, and Azure service activation succeeded. The activation log names this SHA. No fixture suite, provider probe, or browser QA ran. |
+| [Backend fixtures · 41622302698](https://github.com/0atxl/morning/actions/runs/41622302698) | `0b0f4038d2c9c39554c8498f4b1655cc106d31a8` | The runner checked out this revision for `go test -count=1 -v ./...`. All 12 top-level tests and 55 subtests passed with zero skips. They covered the reminder contract, time and input validation, token grants, rate limits and provider error handling using fixtures. The workflow dispatch itself was at `3dcb632`. |
+| [First build workflow · 41637149423](https://github.com/0atxl/morning/actions/runs/41637149423) | `9eb9cd0b28b38e8a59dfa0b944769991e7364a0d` | The source check found no committed frontend. The workflow finished successfully with compilation and deployment skipped. |
+| [Build and Azure deployment · 41641704878](https://github.com/0atxl/morning/actions/runs/41641704878) | `7ac288f5466248fe4905bf6e2d2cdeef8e105c9c` | Go compilation, TypeScript checking, Vite build and packaging succeeded. The Azure receiver logged activation of this SHA. The workflow ran no fixtures, browser checks or live-provider calls. |
 
-The [manual backend workflow](../.github/workflows/backend-tests.yml) is separate from deployment. The passing fixture run predates email drafts, compound-command guards, corrections, calendar responses, minutes, speech, and the shipped frontend. Later backend test definitions and [frontend fixtures](../web/tests/) are present, but the inspected Actions history supplies no execution result for them.
+The fixture run predates email drafts and the guest dashboard. The repository contains later cases for compound commands, browser storage and the additional API endpoints, but these runs give no result for those cases. [Manual fixture workflow](../.github/workflows/backend-tests.yml) · [Backend cases](../server/) · [Frontend cases](../web/tests/)
 
-There is no recorded live browser verification for the current release. Physical microphone capture, live Deepgram and Groq responses, spoken playback, IndexedDB persistence after refresh, contact selection, manual edits, clipboard/download behavior, and retry behavior remain unverified end to end. The code trace above describes implementation, not a successful live rehearsal.
-
-Other practical limits remain visible in the source. The client accepts at most one new reminder and one draft per command. Backend interpretation depends on model output and English-oriented instructions and guards. Provider outages and rate limits can block a command; the reverse proxy shares the API's per-peer allowance. Records have no cross-device sync or backup. Reminder alerts are not implemented, and email drafts remain unsent.
+There is no recorded live browser verification for this release. The slides walkthrough follows the shipped source. A physical mic producing captions through Deepgram, Groq returning both actions, the browser speaking after save, and the edited draft surviving refresh remain unverified end to end. No app, test suite, smoke check or provider call was run to prepare this guide.
