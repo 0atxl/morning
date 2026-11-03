@@ -44,5 +44,9 @@ jobs:
           GOTOOLCHAIN: local
         run: go test -count=1 -v -run '^TestLookup' ./...
 
-      - name: Run only browser snapshot fixtures
-        run: node --experimental-strip-types --test web/tests/lookup-result.test.ts
+      - name: Install browser fixture dependencies without lifecycle scripts
+        working-directory: web
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run only browser lookup fixtures
+        run: node --experimental-strip-types --test web/tests/lookup-result.test.ts web/tests/lookup-flow.test.ts
