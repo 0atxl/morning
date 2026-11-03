@@ -10,10 +10,11 @@ import (
 
 func TestRejectsInvalidModelOutput(t *testing.T) {
 	validAction := `{"type":"create_reminder","title":"Check the oven","due_at":"2026-11-03T09:10:00+05:30"}`
-	validContent := `{"actions":[` + validAction + `],"clarification":null}`
+	validContent := `{"actions":[` + validAction + `],"clarification":null,"recipient_name":null}`
 	for _, tc := range []struct{ name, content string }{
 		{"unknown action", strings.Replace(validContent, "create_reminder", "delete_task", 1)},
 		{"unknown field", strings.Replace(validContent, `"title":`, `"recipient":"someone","title":`, 1)},
+		{"empty draft field on reminder", strings.Replace(validContent, `"title":`, `"subject":"","title":`, 1)},
 		{"no title", strings.Replace(validContent, "Check the oven", "", 1)},
 		{"long title", strings.Replace(validContent, "Check the oven", strings.Repeat("a", 201), 1)},
 		{"control in title", strings.Replace(validContent, "Check the oven", `Check\nthe oven`, 1)},
@@ -22,9 +23,10 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 		{"no due offset", strings.Replace(validContent, "09:10:00+05:30", "09:10:00", 1)},
 		{"wrong timezone offset", strings.Replace(validContent, "+05:30", "+05:00", 1)},
 		{"invalid calendar date", strings.Replace(validContent, "2026-11-03", "2026-02-30", 1)},
-		{"multiple actions", `{"actions":[` + validAction + `,` + validAction + `],"clarification":null}`},
+		{"multiple reminders", `{"actions":[` + validAction + `,` + validAction + `],"clarification":null,"recipient_name":null}`},
 		{"action and question", strings.Replace(validContent, `"clarification":null`, `"clarification":"When?"`, 1)},
 		{"missing clarification", `{"actions":[` + validAction + `]}`},
+		{"missing recipient context", `{"actions":[` + validAction + `],"clarification":null}`},
 		{"missing actions", `{"clarification":"When?"}`},
 		{"null actions", `{"actions":null,"clarification":"When?"}`},
 		{"no action or question", `{"actions":[],"clarification":null}`},

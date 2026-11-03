@@ -113,6 +113,13 @@ func TestReminderContract(t *testing.T) {
 	if got := result.Actions[0]; got.Type != "create_reminder" || got.Title != "Check the oven" || got.DueAt != "2026-11-03T09:10:00+05:30" {
 		t.Fatalf("wrong reminder: %+v", got)
 	}
+	var envelope map[string]json.RawMessage
+	_ = json.Unmarshal(w.Body.Bytes(), &envelope)
+	var actions []map[string]json.RawMessage
+	_ = json.Unmarshal(envelope["actions"], &actions)
+	if len(envelope) != 3 || len(actions[0]) != 3 {
+		t.Fatalf("single reminder shape changed: %s", w.Body.String())
+	}
 }
 
 func TestMissingTimeClarifiesWithoutActions(t *testing.T) {
@@ -258,7 +265,7 @@ func TestRejectsInvalidRequestsBeforeCallingProviders(t *testing.T) {
 		{"bad timezone", strings.Replace(fixtureCommand, "Asia/Kolkata", "not-a-timezone", 1), 400},
 		{"host timezone", strings.Replace(fixtureCommand, "Asia/Kolkata", "Local", 1), 400},
 		{"no timestamp offset", strings.Replace(fixtureCommand, "09:00:00+05:30", "09:00:00", 1), 400},
-		{"extra field", strings.TrimSuffix(fixtureCommand, "}") + `,"contacts":[]}`, 400},
+		{"extra field", strings.TrimSuffix(fixtureCommand, "}") + `,"unsupported_context":[]}`, 400},
 		{"null", "null", 400},
 		{"two objects", fixtureCommand + `{}`, 400},
 		{"large body", strings.Repeat(" ", 16<<10) + fixtureCommand, 413},

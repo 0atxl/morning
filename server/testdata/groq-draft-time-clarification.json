@@ -1,0 +1,12 @@
+{
+  "id": "fixture-draft-time-clarification",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"actions\":[],\"clarification\":\"When should I remind you to follow up?\",\"recipient_name\":\"Priya\"}"
+      }
+    }
+  ]
+}

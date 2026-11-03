@@ -1,0 +1,12 @@
+{
+  "id": "fixture-draft-raina",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"actions\":[{\"type\":\"draft_email\",\"to_contact_id\":\"raina\",\"subject\":\"Revised timeline\",\"body\":\"Hi रैना,\\n\\nCould you share the revised timeline?\\n\\nThanks!\"}],\"clarification\":null,\"recipient_name\":\"रैना\"}"
+      }
+    }
+  ]
+}

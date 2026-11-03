@@ -1,8 +1,8 @@
 # Morning Go API
 
-The guest reminder flow has two endpoints. The browser streams microphone audio directly to Deepgram, then sends the complete final transcript to Go once. Go asks Groq to interpret it and returns a validated reminder or a clarification question.
+The guest voice flow has two endpoints. The browser streams microphone audio directly to Deepgram, then sends the complete final transcript to Go once. Go asks Groq to interpret it and returns a validated reminder, an editable email draft, both together, or a clarification question.
 
-The browser makes the reminder real by committing it to IndexedDB using `command_id` as a unique key. Speak the confirmed time with browser speech synthesis only after that transaction commits. The API does not save reminders, schedule alerts or generate spoken confirmations.
+The browser makes the actions real by committing them to IndexedDB using `command_id` to prevent duplicate saves. Speak the saved result with browser speech synthesis only after that transaction commits. Drafts stay editable and unsent. The API does not save records, send email, schedule alerts or generate spoken confirmations.
 
 ## Local startup
 
@@ -58,6 +58,8 @@ Use the `bearer` subprotocol for the temporary JWT. Never send the permanent ser
 
 The server requests a 30-second grant from `POST https://api.deepgram.com/v1/auth/grant`. The token needs to be valid when the connection opens. An established WebSocket can stay open after expiry. The grant permits Deepgram voice APIs and is not restricted to Nova-3, so the browser must use the returned Nova-3 URL. See [Deepgram token authentication](https://developers.deepgram.com/guides/fundamentals/token-based-authentication) and the [grant reference](https://developers.deepgram.com/reference/auth/tokens/grant).
 
+If Deepgram omits `expires_in`, the browser response uses the requested 30-second TTL. Explicit invalid expiry values, empty tokens and returned permanent keys fail validation.
+
 The URL assumes containerized audio such as MediaRecorder WebM/Opus. A browser sending raw PCM must supply its actual `encoding`, `sample_rate` and `channels` in the WebSocket URL. Interim captions can change. On Stop, flush pending audio and wait for Deepgram's final results before posting the transcript. Combine final segments in order without treating interim revisions as new commands.
 
 Token issuance allows 5 requests per client IP and 60 total requests per server process per UTC minute. Commands allow 10 per IP and 120 total per minute. Attempts count even if a provider fails. `429` responses include a `Retry-After` header in seconds. Limits reset at minute boundaries and process restart. They are not shared between server instances.
@@ -105,11 +107,94 @@ For `"Remind me to check the oven"`, `200 OK` instead returns:
 }
 ```
 
-Display the question without saving a reminder. This milestone has no conversational clarification state. Let the person record a complete revised command with a new ID and timestamp.
+Display the question without saving a reminder. A missing or ambiguous time requires a complete revised command with a new ID and timestamp. The backend stores no conversation state.
 
-Keep the original ID, transcript, timestamp and timezone on an explicit retry of the same request. The server stores no command history and can call Groq again on a retry. IndexedDB must enforce uniqueness of the command ID in the same transaction that creates the reminder. A duplicate response must not create or announce another saved reminder. An error response contains no actions.
+### Email draft and reminder
 
-Go uses Groq's [strict JSON schema mode](https://console.groq.com/docs/structured-outputs) for `openai/gpt-oss-20b`. It then checks that the output contains one supported action or a clarification, a nonblank title up to 200 characters, a future timestamp, and the correct IANA offset at the due instant. UTC output uses `+00:00`. Unexpected fields, multiple actions, refusals, truncated output and tool calls are rejected. The transcript is sent as data in a separate user message. There are no tools or server-side action execution.
+Send relevant contacts from this browser's address book in the optional `contacts` array. Omitted contacts mean an empty list. No account is required.
+
+```json
+{
+  "command_id": "draft-follow-up-1",
+  "transcript": "Draft Priya an email asking her to confirm the revised timeline, and remind me Friday at ten AM to follow up.",
+  "now": "2026-11-03T09:00:00+05:30",
+  "timezone": "Asia/Kolkata",
+  "contacts": [
+    {"id": "priya-shah", "name": "Priya Shah", "email": "priya.shah@example.com"}
+  ]
+}
+```
+
+`200 OK`:
+
+```json
+{
+  "command_id": "draft-follow-up-1",
+  "actions": [
+    {
+      "type": "draft_email",
+      "to_contact_id": "priya-shah",
+      "subject": "Confirm the revised timeline",
+      "body": "Hi Priya,\n\nCould you confirm the revised timeline?\n\nThanks!"
+    },
+    {
+      "type": "create_reminder",
+      "title": "Follow up with Priya",
+      "due_at": "2026-11-06T10:00:00+05:30"
+    }
+  ],
+  "clarification": null
+}
+```
+
+For a draft alone, use a new command ID and the transcript `"Draft Priya an email asking her to confirm the revised timeline."` with the same contact context. The response contains only the draft:
+
+```json
+{
+  "command_id": "draft-only-1",
+  "actions": [
+    {
+      "type": "draft_email",
+      "to_contact_id": "priya-shah",
+      "subject": "Confirm the revised timeline",
+      "body": "Hi Priya,\n\nCould you confirm the revised timeline?\n\nThanks!"
+    }
+  ],
+  "clarification": null
+}
+```
+
+The browser resolves `to_contact_id` against the supplied contact snapshot and stores the draft for editing. Subject and body are plain text. No message is sent. A command can contain at most one draft and one reminder; Go validates the complete result before returning actions.
+
+### Contact clarification
+
+If both Priya Shah and Priya Rao are supplied for the compound example, `200 OK` returns choices and zero actions, even if the model picked one:
+
+```json
+{
+  "command_id": "draft-follow-up-1",
+  "actions": [],
+  "clarification": "Which Priya should I draft the email to?",
+  "clarification_options": [
+    {"contact_id": "priya-shah", "name": "Priya Shah", "email": "priya.shah@example.com"},
+    {"contact_id": "priya-rao", "name": "Priya Rao", "email": "priya.rao@example.com"}
+  ]
+}
+```
+
+Go matches complete name words, ignoring case and punctuation. `Priya` matches both names; `Priya Rao` narrows the choice. Offered names and addresses come from the request snapshot. A selection must belong to those matching contacts. Duplicate contact IDs or an invalid selection return the existing `400 invalid_request` envelope.
+
+Save neither action while waiting for a selection. Retain the pending request and resend it with the same ID, transcript, timestamp, timezone and contacts, adding `"selected_contact_id": "priya-rao"`. The successful response binds the draft to that ID and resolves Friday from the original timestamp. If the provider returns a draft for a different ID, Go rejects the response. `clarification_options` appears only when a contact choice is needed; the existing reminder-only response stays unchanged.
+
+A missing contact also returns zero actions and a question. Add the contact locally and submit a complete revised request with a new command ID. A missing or ambiguous reminder time blocks the draft as well, until a complete revised command resolves it.
+
+### Saving and retries
+
+Keep the original request on an explicit HTTP retry. The server stores no command history and can call Groq again. The browser must use one IndexedDB read/write transaction spanning reminders, drafts and command receipts. Check the unique receipt by `command_id`; if present, reuse its saved records and ignore the replay. Otherwise, create every returned record and add the receipt in that same transaction. One reminder and one draft can use the same ID in their separate stores.
+
+If any write fails, abort all writes, including the receipt. Retrying after an abort can save the whole result. Retrying after a commit must preserve both records and any later draft edits. Account for existing reminder records when introducing command receipts. Speak only after the new transaction completes, and never announce another success on a replay. An error response contains no actions.
+
+Go uses Groq's [strict JSON schema mode](https://console.groq.com/docs/structured-outputs) for `openai/gpt-oss-20b`. It checks action counts and fields, contact membership, text limits, future reminder timestamps and IANA offsets. UTC output uses `+00:00`. Unsupported actions, duplicate action types, mixed draft/reminder fields, refusals, truncated output and tool calls are rejected. Transcript and contact context are data in a separate user message. There are no tools or server-side action execution.
 
 Groq interprets natural language and computes the requested due time. Go validates the structure and time constraints; it does not independently parse every spoken time expression. A fixture response establishes the intended contract, not live model accuracy.
 
@@ -142,16 +227,14 @@ Show `error.message` and retain the transcript. `command_id` is present when the
 | `502` | `voice_provider_invalid_response`, `command_provider_invalid_response` | Provider output failed validation. |
 | `504` | `voice_provider_timeout`, `command_provider_timeout` | Provider exceeded the 20-second HTTP timeout. |
 
-Command IDs allow 1 to 128 ASCII letters, digits, hyphens or underscores. Transcripts allow up to 8192 UTF-8 bytes. There is no automatic provider retry. Keys must stay in the server environment, without `VITE_` prefixes.
+Command and contact IDs allow 1 to 128 ASCII letters, digits, hyphens or underscores. Transcripts allow up to 8192 UTF-8 bytes. Supply at most 20 relevant contacts, each with a name up to 200 characters and a plain email address up to 254 characters. Reminder titles and draft subjects allow up to 200 characters. Draft bodies allow up to 8000 characters and can include line breaks. The whole command body still has a 16 KiB limit. There is no automatic provider retry. Keys must stay in the server environment, without `VITE_` prefixes.
 
 ## Verification
 
-Tests require explicit user confirmation for each run. No tests, live-provider probes or browser verification were run while implementing this milestone.
+Tests require explicit user confirmation for each run and run only on GitHub Actions. The manually dispatched [Backend tests workflow](../.github/workflows/backend-tests.yml) runs the provider-fixture suite for an approved revision. It has no automatic triggers and needs no provider credentials. Do not run the suite locally or dispatch it without approval for that exact revision and scope.
 
-Formatting, compilation with `go build -buildvcs=false`, and static analysis with `go vet ./...` completed. These commands did not start the server or execute tests.
+The custom test transport returns local `testdata/` fixtures and cannot reach live providers. Cases cover a draft alone, the Friday compound command, contact ambiguity despite a confident model choice, valid and invalid selections, all-or-nothing output validation, the original reminder response, missing context, provider failures, timezones and token grants. The new draft cases have been authored but have not run. No provider probes, browser QA or CI were run for this change.
 
-The proposed provider-fixture unit/API suite is `cd server && go test ./...`, only after confirmation. Its custom HTTP transport returns local `testdata/` fixtures and cannot reach live providers. It covers the 09:10 Kolkata result, missing-time clarification, displayable failures, rejected model output, UTC and daylight-saving offsets, request limits and token issuance limits. It does not verify transcription, microphone capture, IndexedDB persistence or browser speech.
+Smoke and browser E2E verification require a separately approved, manually dispatched GitHub Actions run with the cases, commit and live-provider usage stated. Backend fixture tests do not verify microphone capture, IndexedDB transactions, duplicate saves after an edit, or browser speech.
 
-Smoke and browser E2E verification must use a separately approved, manually dispatched GitHub Actions workflow. Agree on the cases, commit and any live provider usage before running it. No workflow is included or triggered by this backend.
-
-The server stops at validated reminder responses. Reminder edits, email drafts, meeting minutes, accounts, server storage and speech endpoints are outside this milestone.
+The server stops at validated reminder and draft responses. Reminder edits, meeting minutes, accounts, server storage, mail delivery and speech endpoints are outside this milestone.

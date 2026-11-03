@@ -1,0 +1,12 @@
+{
+  "id": "fixture-compound-missing-draft",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"actions\":[{\"type\":\"create_reminder\",\"title\":\"Follow up with Priya\",\"due_at\":\"2026-11-06T10:00:00+05:30\"}],\"clarification\":null,\"recipient_name\":null}"
+      }
+    }
+  ]
+}

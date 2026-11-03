@@ -1,0 +1,12 @@
+{
+  "id": "fixture-draft-reminder",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"actions\":[{\"type\":\"draft_email\",\"to_contact_id\":\"priya-shah\",\"subject\":\"Confirm the revised timeline\",\"body\":\"Hi Priya,\\n\\nCould you confirm the revised timeline?\\n\\nThanks!\"},{\"type\":\"create_reminder\",\"title\":\"Follow up with Priya\",\"due_at\":\"2026-11-06T10:00:00+05:30\"}],\"clarification\":null,\"recipient_name\":\"Priya\"}"
+      }
+    }
+  ]
+}

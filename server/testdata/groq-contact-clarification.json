@@ -1,0 +1,12 @@
+{
+  "id": "fixture-contact-clarification",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"actions\":[],\"clarification\":\"Which Priya should I draft the email to?\",\"recipient_name\":\"Priya\"}"
+      }
+    }
+  ]
+}

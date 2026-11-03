@@ -13,21 +13,27 @@ import (
 const websocketURL = "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-US&interim_results=true&smart_format=true"
 
 type commandRequest struct {
-	CommandID  string `json:"command_id"`
-	Transcript string `json:"transcript"`
-	Now        string `json:"now"`
-	Timezone   string `json:"timezone"`
+	CommandID         string    `json:"command_id"`
+	Transcript        string    `json:"transcript"`
+	Now               string    `json:"now"`
+	Timezone          string    `json:"timezone"`
+	Contacts          []contact `json:"contacts,omitempty"`
+	SelectedContactID *string   `json:"selected_contact_id,omitempty"`
 }
 
 type action struct {
-	Type  string `json:"type"`
-	Title string `json:"title"`
-	DueAt string `json:"due_at"`
+	Type        string `json:"type"`
+	Title       string `json:"title,omitempty"`
+	DueAt       string `json:"due_at,omitempty"`
+	ToContactID string `json:"to_contact_id,omitempty"`
+	Subject     string `json:"subject,omitempty"`
+	Body        string `json:"body,omitempty"`
 }
 
 type interpretation struct {
-	Actions       []action `json:"actions"`
-	Clarification *string  `json:"clarification"`
+	Actions              []action        `json:"actions"`
+	Clarification        *string         `json:"clarification"`
+	ClarificationOptions []contactOption `json:"clarification_options,omitempty"`
 }
 
 type commandResponse struct {
@@ -124,12 +130,26 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, id, "invalid_request", err.Error(), false)
 		return
 	}
-	result, err := a.providers.interpret(r.Context(), request, now, location)
+	model, err := a.providers.interpret(r.Context(), request, now, location)
 	if err != nil {
 		writeProviderError(w, request.CommandID, "command", err)
 		return
 	}
+	result := interpretation{Actions: model.Actions, Clarification: model.Clarification}
 	if err := validateInterpretation(&result, now, location); err != nil {
+		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
+		return
+	}
+	result, err = resolveContact(result, model.RecipientName, request)
+	if errors.Is(err, errInvalidSelection) {
+		writeError(w, http.StatusBadRequest, request.CommandID, "invalid_request", err.Error(), false)
+		return
+	}
+	if err != nil {
+		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
+		return
+	}
+	if err := validateCommandCompleteness(result, request.Transcript); err != nil {
 		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 		return
 	}

@@ -1,0 +1,12 @@
+{
+  "id": "fixture-compound-missing-reminder",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"actions\":[{\"type\":\"draft_email\",\"to_contact_id\":\"priya-shah\",\"subject\":\"Revised timeline\",\"body\":\"Hi Priya,\\n\\nCould you share the revised timeline?\\n\\nThanks!\"}],\"clarification\":null,\"recipient_name\":\"Priya\"}"
+      }
+    }
+  ]
+}
