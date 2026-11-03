@@ -1,0 +1,170 @@
+name: Build and deploy
+run-name: Build and deploy ${{ github.sha }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - server/**
+      - web/**
+      - deploy/**
+      - .github/workflows/deploy.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: morning-production
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      ready: ${{ steps.source.outputs.ready }}
+    steps:
+      - name: Check out this exact commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check for committed app source
+        id: source
+        shell: bash
+        run: |
+          echo "Source commit: $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          if git ls-files --error-unmatch server/go.mod web/package.json web/package-lock.json web/index.html >/dev/null 2>&1; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+            echo 'Build and deployment skipped: commit the web client and its npm lockfile before the first release.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "$DEPLOY_ENABLED" != true ]]; then
+            echo 'Production deployment is disabled. Complete deploy/README.md and set MORNING_DEPLOY_ENABLED=true.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          DEPLOY_ENABLED: ${{ vars.MORNING_DEPLOY_ENABLED }}
+
+      - name: Set up Go
+        if: steps.source.outputs.ready == 'true'
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: server/go.mod
+          cache: false
+
+      - name: Set up Node
+        if: steps.source.outputs.ready == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Compile the API for the VM
+        if: steps.source.outputs.ready == 'true'
+        working-directory: server
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+          GOTOOLCHAIN: local
+          GOPROXY: 'off'
+        run: |
+          mkdir -p "$RUNNER_TEMP/morning-release"
+          go build -trimpath -buildvcs=false -o "$RUNNER_TEMP/morning-release/morning-server" .
+
+      - name: Build production browser assets without npm lifecycle scripts
+        if: steps.source.outputs.ready == 'true'
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          ./node_modules/.bin/tsc --noEmit
+          ./node_modules/.bin/vite build
+          cp -a dist "$RUNNER_TEMP/morning-release/web"
+
+      - name: Package the release and its provenance
+        if: steps.source.outputs.ready == 'true'
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import datetime, json, os, pathlib
+          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'morning-release'
+          (directory / 'deployment.json').write_text(json.dumps({
+              'commit': os.environ['RELEASE_SHA'],
+              'workflow_run': os.environ['RUN_URL'],
+              'built_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          }) + '\n')
+          PY
+          tar -C "$RUNNER_TEMP/morning-release" -czf morning-release.tar.gz morning-server web deployment.json
+          echo 'Compilation completed. No test suites, provider probes or browser QA ran.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the built artifact
+        if: steps.source.outputs.ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: morning-${{ github.sha }}
+          path: morning-release.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.ready == 'true' && github.ref == 'refs/heads/main' && vars.MORNING_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://morning.atuls.me
+    steps:
+      - name: Download this run's artifact
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: morning-${{ github.sha }}
+
+      - name: Check production configuration
+        env:
+          DEPLOY_HOST: ${{ vars.MORNING_DEPLOY_HOST }}
+          SSH_KEY: ${{ secrets.MORNING_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.MORNING_DEPLOY_KNOWN_HOSTS }}
+          TS_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
+        run: |
+          for required in DEPLOY_HOST SSH_KEY KNOWN_HOSTS TS_ID TS_SECRET; do
+            if [[ -z "${!required}" ]]; then
+              echo "Missing production configuration: $required. See deploy/README.md." >&2
+              exit 1
+            fi
+          done
+
+      - name: Join the restricted deployment tailnet identity
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:morning-deploy
+          hostname: morning-deploy-${{ github.run_id }}
+
+      - name: Activate the release over verified SSH
+        env:
+          DEPLOY_HOST: ${{ vars.MORNING_DEPLOY_HOST }}
+          SSH_KEY: ${{ secrets.MORNING_DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.MORNING_DEPLOY_KNOWN_HOSTS }}
+          RELEASE_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/morning-ssh"
+          printf '%s\n' "$SSH_KEY" > "$RUNNER_TEMP/morning-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/morning-ssh/known_hosts"
+          trap 'rm -f "$RUNNER_TEMP/morning-ssh/key"' EXIT
+          ssh -i "$RUNNER_TEMP/morning-ssh/key" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/morning-ssh/known_hosts" \
+            -o ConnectTimeout=30 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+            "morning-deploy@$DEPLOY_HOST" "deploy $RELEASE_SHA $RUN_URL" < morning-release.tar.gz
+          printf 'Deployed `%s` to https://morning.atuls.me\n\nWorkflow: %s\n\nService activation completed. Application behavior has not been tested.\n' "$RELEASE_SHA" "$RUN_URL" >> "$GITHUB_STEP_SUMMARY"

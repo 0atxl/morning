@@ -1,0 +1,26 @@
+[Unit]
+Description=Morning Go API
+After=network.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+ConditionPathExists=/opt/morning/current/morning-server
+
+[Service]
+Type=exec
+User=morning
+Group=morning
+WorkingDirectory=/opt/morning/current
+EnvironmentFile=/etc/morning/server.env
+ExecStartPre=/bin/sh -c '[ -n "$$DEEPGRAM_API_KEY" ] && [ -n "$$GROQ_API_KEY" ]'
+ExecStart=/opt/morning/current/morning-server
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
