@@ -1,0 +1,15 @@
+{
+  "results": [
+    {
+      "name": "Vadodara",
+      "admin1": "Gujarat",
+      "country": "India",
+      "country_code": "IN",
+      "timezone": "Asia/Kolkata",
+      "latitude": 22.3,
+      "longitude": 73.18,
+      "feature_code": "PPLA2",
+      "population": 1500000
+    }
+  ]
+}
