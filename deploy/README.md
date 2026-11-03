@@ -79,11 +79,12 @@ Root-owned deployment tooling and unit files are installed during bootstrap, not
 
 Morning can email one configured inbox automatically at a reminder's due time. Gmail acts as both sender and recipient. The public guest workspace never chooses a mail recipient. Only the browser paired with the private owner link schedules emails.
 
-Turn on Google 2-Step Verification and create a dedicated [Google app password](https://myaccount.google.com/apppasswords) for Morning. On your trusted laptop, from the checkout containing this feature, run:
+Turn on Google 2-Step Verification and create a dedicated [Google app password](https://myaccount.google.com/apppasswords) for Morning. From the project checkout on your laptop, set `vm` to the same SSH destination you use to administer the VM.
 
 ```bash
-scp deploy/configure-reminder-email.py good@100.120.127.73:configure-reminder-email.py
-ssh -t good@100.120.127.73 'sudo python3 ./configure-reminder-email.py'
+vm='admin@your-vm'
+scp deploy/configure-reminder-email.py "$vm:configure-reminder-email.py"
+ssh -t "$vm" 'sudo python3 ./configure-reminder-email.py'
 ```
 
 Enter the Gmail address and app password at the VM prompts. The script stores them in a root-only environment file, enables persistent queue storage, restarts the API, and prints a private pairing link. Open that link once in your own browser. Keep it out of chat, recordings and shared links. Removing the site data forgets the pairing. Run the script again with the same account to update the app password or recover the pairing link.
