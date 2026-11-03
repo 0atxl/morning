@@ -44,6 +44,9 @@ func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlac
 	parts := strings.Split(place, ",")
 	name := strings.Trim(strings.TrimSpace(parts[0]), ".?!")
 	args := url.Values{"name": {name}, "count": {"5"}, "language": {"en"}, "format": {"json"}}
+	if hindiText(place) {
+		args.Set("language", "hi")
+	}
 	var response struct {
 		Results []lookupPlace `json:"results"`
 	}
@@ -56,7 +59,7 @@ func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlac
 		if !validText(candidate.Name, 100) || !validText(candidate.Country, 100) || candidate.Latitude == nil || candidate.Longitude == nil || math.Abs(*candidate.Latitude) > 90 || math.Abs(*candidate.Longitude) > 180 {
 			continue
 		}
-		if !strings.EqualFold(candidate.Name, name) {
+		if !strings.EqualFold(candidate.Name, name) && !hindiText(name) {
 			continue
 		}
 		if _, err := time.LoadLocation(candidate.Timezone); err != nil || candidate.Timezone == "" || candidate.Timezone == "Local" {
@@ -111,6 +114,9 @@ func (s *lookupService) placeLookup(ctx context.Context, q lookupQuery, now time
 			}
 		}
 		question := "Which place: " + strings.Join(labels, " or ") + "?"
+		if q.ReplyLanguage == "hi" {
+			question = "कौन सी जगह: " + strings.Join(labels, " या ") + "?"
+		}
 		if !validText(question, maxSpeechChars) {
 			question = "Which region and country is that city in?"
 		}
@@ -135,6 +141,10 @@ func (s *lookupService) placeLookup(ctx context.Context, q lookupQuery, now time
 		result.DataTime = local.Format(time.RFC3339)
 		result.Answer = fmt.Sprintf("It's %s on %s in %s, %s.", local.Format("3:04 PM"), local.Format("2 January"), place.Name, place.Timezone)
 		spoken = fmt.Sprintf("It's %s on %s in %s.", local.Format("3:04 PM"), local.Format("2 January"), place.Name)
+		if q.ReplyLanguage == "hi" {
+			spoken = fmt.Sprintf("%s में %s को %s बजे हैं।", place.Name, local.Format("02-01-2006"), hindiClock(local))
+			result.Answer = spoken + " समय क्षेत्र " + place.Timezone + "।"
+		}
 		result.Sources = []lookupSource{{Title: "IANA time zone database", URL: "https://www.iana.org/time-zones", Publisher: "IANA"}, {Title: "Place resolved by Open-Meteo / GeoNames", URL: "https://open-meteo.com/en/docs/geocoding-api", Publisher: "Open-Meteo / GeoNames"}}
 	} else {
 		args := url.Values{
@@ -171,10 +181,35 @@ func (s *lookupService) placeLookup(ctx context.Context, q lookupQuery, now time
 		result.DataTime = dataTime.Format(time.RFC3339)
 		result.Answer = fmt.Sprintf("%s: %s, %.1f °C, as of %s local time, %s. Weather by Open-Meteo.", place.label(), conditions, *weather.Current.Temperature, dataTime.Format("3:04 PM on 2 January"), place.Timezone)
 		spoken = fmt.Sprintf("%s in %s, %.1f degrees Celsius, as of %s local time, from Open-Meteo.", conditions, place.Name, *weather.Current.Temperature, dataTime.Format("3:04 PM"))
+		if q.ReplyLanguage == "hi" {
+			condition := hindiWeatherConditions[*weather.Current.Code]
+			spoken = fmt.Sprintf("%s में %s और %.1f डिग्री सेल्सियस है, स्थानीय समय %s बजे के डेटा के अनुसार, Open-Meteo से।", place.Name, condition, *weather.Current.Temperature, hindiClock(dataTime))
+			result.Answer = fmt.Sprintf("%s में %s, %.1f °C। डेटा %s, %s बजे का है। स्रोत Open-Meteo।", place.label(), condition, *weather.Current.Temperature, dataTime.Format("02-01-2006"), hindiClock(dataTime))
+		}
 		result.Sources = []lookupSource{{Title: "Current weather from Open-Meteo", URL: openMeteoWeatherURL + "?" + args.Encode(), Publisher: "Open-Meteo"}, {Title: "Place data from GeoNames via Open-Meteo", URL: "https://open-meteo.com/en/docs/geocoding-api", Publisher: "Open-Meteo / GeoNames"}}
 	}
 	result.Speech = lookupSentence(spoken)
 	return lookupOutcome{Result: result}, nil
+}
+
+func hindiClock(instant time.Time) string {
+	period := "रात"
+	if instant.Hour() >= 6 && instant.Hour() < 12 {
+		period = "सुबह"
+	} else if instant.Hour() >= 12 && instant.Hour() < 16 {
+		period = "दोपहर"
+	} else if instant.Hour() >= 16 && instant.Hour() < 20 {
+		period = "शाम"
+	}
+	return period + " " + instant.Format("3:04")
+}
+
+var hindiWeatherConditions = map[int]string{
+	0: "साफ़ आसमान", 1: "अधिकतर साफ़ आसमान", 2: "हल्के बादल", 3: "बादल", 45: "कोहरा", 48: "बर्फ़ीला कोहरा",
+	51: "हल्की बूंदाबांदी", 53: "बूंदाबांदी", 55: "तेज़ बूंदाबांदी", 56: "हल्की जमने वाली बूंदाबांदी", 57: "तेज़ जमने वाली बूंदाबांदी",
+	61: "हल्की बारिश", 63: "बारिश", 65: "तेज़ बारिश", 66: "हल्की जमने वाली बारिश", 67: "तेज़ जमने वाली बारिश",
+	71: "हल्की बर्फ़बारी", 73: "बर्फ़बारी", 75: "तेज़ बर्फ़बारी", 77: "बर्फ़ के दाने", 80: "हल्की बारिश की बौछारें", 81: "बारिश की बौछारें", 82: "तेज़ बारिश की बौछारें",
+	85: "हल्की बर्फ़ की बौछारें", 86: "तेज़ बर्फ़ की बौछारें", 95: "गरज के साथ बारिश", 96: "गरज के साथ हल्के ओले", 99: "गरज के साथ भारी ओले",
 }
 
 func (s *lookupService) lookupGET(ctx context.Context, endpoint string, args url.Values, dst any) error {

@@ -1,5 +1,6 @@
 import { ownerKey, type MailSchedule } from "./reminder-alerts.ts";
 import type { CommandAction, CommandRequest } from "./command-api.ts";
+import type { SpeechLanguage } from "./language.ts";
 import {
   parseLookupResult,
   type LookupContext,
@@ -24,6 +25,7 @@ export type Turn = {
   transcript: string;
   createdAt: string;
   reply?: string;
+  replyLanguage?: SpeechLanguage;
   lookup?: LookupResult;
   lookupContext?: LookupContext;
 };

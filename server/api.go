@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const websocketURL = "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-US&interim_results=true&smart_format=true"
+const websocketURL = "wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&language_hint=en&language_hint=hi&interim_results=true&smart_format=true"
 
 type commandRequest struct {
 	CommandID          string           `json:"command_id"`
@@ -69,6 +69,7 @@ type commandResponse struct {
 	CommandID string `json:"command_id"`
 	interpretation
 	Reply         string         `json:"reply,omitempty"`
+	ReplyLanguage string         `json:"reply_language,omitempty"`
 	Lookup        *lookupResult  `json:"lookup,omitempty"`
 	LookupContext *lookupContext `json:"lookup_context,omitempty"`
 }
@@ -199,6 +200,7 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 			writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 			return
 		}
+		model.Lookup.ReplyLanguage = replyLanguage(model.ReplyLanguage, request.Transcript)
 		a.answerLookup(w, r, request, *model.Lookup)
 		return
 	}
@@ -238,10 +240,15 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(result.Actions) == 1 && result.Actions[0].Type == "reply" {
-		writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Reply: result.Actions[0].Text})
+		writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Reply: result.Actions[0].Text, ReplyLanguage: replyLanguage(model.ReplyLanguage, request.Transcript)})
 		return
 	}
-	writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: result})
+	language := replyLanguage(model.ReplyLanguage, request.Transcript)
+	if language == "hi" && result.Clarification != nil {
+		question := hindiQuestion(*result.Clarification)
+		result.Clarification = &question
+	}
+	writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: result, ReplyLanguage: language})
 }
 
 func (a *api) allow(w http.ResponseWriter, r *http.Request, limiter *rateLimiter) bool {

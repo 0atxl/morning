@@ -1,4 +1,5 @@
 import type { Contact, ContactOption } from "./contacts.ts";
+import { validSpeechLanguage, type SpeechLanguage } from "./language.ts";
 import {
   parseLookupContext,
   parseLookupResult,
@@ -51,7 +52,7 @@ export type UpdateDraftAction = {
 };
 export type CommandAction =
   ReminderAction | DraftAction | RescheduleAction | UpdateDraftAction;
-export type CommandResponse =
+export type CommandResponse = (
   | { kind: "actions"; actions: CommandAction[] }
   | { kind: "reply"; text: string }
   | { kind: "lookup"; result: LookupResult }
@@ -60,7 +61,8 @@ export type CommandResponse =
       question: string;
       options: ContactOption[];
       lookupContext?: LookupContext;
-    };
+    }
+) & { replyLanguage?: SpeechLanguage };
 
 export class RequestError extends Error {
   readonly retryAt: number;
@@ -146,6 +148,11 @@ export async function voiceToken(signal: AbortSignal) {
     url.username ||
     url.password ||
     url.searchParams.get("model") !== "nova-3" ||
+    url.searchParams.get("language") !== "multi" ||
+    url.searchParams.getAll("language_hint").length !== 2 ||
+    !["en", "hi"].every((language) =>
+      url.searchParams.getAll("language_hint").includes(language),
+    ) ||
     url.searchParams.get("interim_results") !== "true" ||
     [...url.searchParams.keys()].some((key) =>
       /token|key|authorization/i.test(key),
@@ -172,6 +179,12 @@ export function parseCommandResponse(
       "Morning returned a mismatched command response. Please retry.",
     );
   }
+  if (!validSpeechLanguage(value.reply_language))
+    throw new RequestError(
+      "Morning returned an invalid reply language. Please retry.",
+    );
+  const language =
+    value.reply_language === "hi" ? { replyLanguage: "hi" as const } : {};
   if (value.lookup !== undefined || value.lookup_context !== undefined) {
     if (
       value.actions.length !== 0 ||
@@ -185,6 +198,7 @@ export function parseCommandResponse(
             "clarification",
             "lookup",
             "lookup_context",
+            "reply_language",
           ].includes(key),
       )
     )
@@ -197,6 +211,7 @@ export function parseCommandResponse(
           "Morning returned an incomplete lookup. Please retry.",
         );
       const result = parseLookupResult(value.lookup);
+      if (value.reply_language === "hi") result.reply_language = "hi";
       if (
         request.lookup_context &&
         result.kind !== request.lookup_context.query.kind
@@ -204,7 +219,7 @@ export function parseCommandResponse(
         throw new RequestError(
           "Morning returned a different lookup. Please retry.",
         );
-      return { kind: "lookup", result };
+      return { kind: "lookup", result, ...language };
     }
     if (
       typeof value.clarification !== "string" ||
@@ -227,6 +242,7 @@ export function parseCommandResponse(
       question: value.clarification.trim(),
       options: [],
       lookupContext,
+      ...language,
     };
   }
   if (request.lookup_context)
@@ -241,7 +257,7 @@ export function parseCommandResponse(
     value.reply.trim() &&
     [...value.reply].length <= 240
   )
-    return { kind: "reply", text: value.reply.trim() };
+    return { kind: "reply", text: value.reply.trim(), ...language };
   if (value.reply !== undefined)
     throw new RequestError(
       "Morning returned a mixed reply and action. Nothing was saved. Please retry.",
@@ -285,6 +301,7 @@ export function parseCommandResponse(
       kind: "clarification",
       question: value.clarification.trim(),
       options,
+      ...language,
     };
   }
   if (
@@ -428,7 +445,7 @@ export function parseCommandResponse(
     throw new RequestError(
       "Morning didn't update the selected item. Nothing was changed. Please retry.",
     );
-  return { kind: "actions", actions };
+  return { kind: "actions", actions, ...language };
 }
 
 export function withSelectedContact(

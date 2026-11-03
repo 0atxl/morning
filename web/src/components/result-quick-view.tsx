@@ -50,7 +50,7 @@ type Props = {
   onSelect: (id: string | null) => void;
   onSave: (result: WorkspaceResult) => Promise<void>;
   onRestoreFocus: () => void;
-  onPlayReply: (text: string) => void;
+  onPlayReply: (text: string, language?: "en" | "hi") => void;
 };
 
 export function ResultQuickView({
@@ -431,7 +431,12 @@ function ResultContent({
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => onPlayReply(result.lookup.speech)}
+                  onClick={() =>
+                    onPlayReply(
+                      result.lookup.speech,
+                      result.lookup.reply_language,
+                    )
+                  }
                 >
                   <Volume2 /> Play reply
                 </Button>
