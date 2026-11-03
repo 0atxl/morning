@@ -408,6 +408,7 @@ export function useReminderFlow() {
       setView((previous) => ({
         ...previous,
         phase: "clarification",
+        status: lookupContext ? "Waiting for location" : "",
         question,
         options,
         reminderOptions,

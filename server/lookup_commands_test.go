@@ -102,6 +102,9 @@ func TestLookupCommandSpokenPlaceFinishesOriginalSearchWithoutInterpretingAnActi
 				}
 				return lookupIntentResponse(modelInterpretation{Actions: []action{}, Lookup: &lookupQuery{Kind: "hotels"}}), nil
 			}
+			if body.ResponseFormat.JSONSchema.Name == "morning_lookup_place" {
+				return lookupPlaceResponse(`{"place":"Jaipur railway station"}`), nil
+			}
 			return evidenceResponse("", evidenceItem(0, "Hotel Station Garden", "Hotel Station Garden is near Jaipur railway station.")), nil
 		}
 		return fixtureMCP(t, r, fixture(t, "tavily-hotels.json"), func(args map[string]any) {

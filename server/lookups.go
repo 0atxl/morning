@@ -82,6 +82,7 @@ type lookupService struct {
 	clock         func() time.Time
 	searchLimiter *rateLimiter
 	placeLimiter  *rateLimiter
+	placeReplies  *rateLimiter
 }
 
 func newLookupService(p *providers, clock func() time.Time) *lookupService {
@@ -95,6 +96,7 @@ func newLookupService(p *providers, clock func() time.Time) *lookupService {
 		client: client, tavilyKey: strings.TrimSpace(os.Getenv("TAVILY_API_KEY")),
 		groq: &providers{client: &client, groqKey: p.groqKey}, clock: clock,
 		searchLimiter: newRateLimiter(4, 40), placeLimiter: newRateLimiter(4, 40),
+		placeReplies: newRateLimiter(4, 40),
 	}
 }
 
@@ -214,7 +216,14 @@ func publicLookupError(err error) error {
 }
 
 func (a *api) answerLookup(w http.ResponseWriter, r *http.Request, request commandRequest, query lookupQuery) {
-	outcome, err := a.lookups.lookup(r.Context(), query, clientAddress(r), request.Timezone)
+	var outcome lookupOutcome
+	var err error
+	if request.LookupContext != nil {
+		query, err = a.lookups.spokenLookupPlace(r.Context(), *request.LookupContext, request.Transcript, clientAddress(r))
+	}
+	if err == nil {
+		outcome, err = a.lookups.lookup(r.Context(), query, clientAddress(r), request.Timezone)
+	}
 	if err != nil {
 		failure, ok := publicLookupError(err).(*lookupError)
 		if !ok {

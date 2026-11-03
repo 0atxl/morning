@@ -96,6 +96,8 @@ For lookups, resolve Hindi place names to their standard searchable spelling, e.
 standard English spellings. Never shorten a qualified place to just the city. For "अभी पुणे, महाराष्ट्र,
 भारत में क्या मौसम है?", use place="Pune, Maharashtra, India". Keep only the location and search terms
 needed for the lookup; reply_language controls the answer language. Never add an unspoken region or country.
+place contains only the location, never the whole transcript or question. Remove weather/time question
+wording such as "में क्या मौसम हो रहा है" from place, while preserving the spoken city and region.
 Support one new reminder, one editable email draft, one of each together, a single reminder time correction,
 an update to an existing draft's subject and message,
 one calendar event for file export, a conversational reply, or one read-only lookup.
