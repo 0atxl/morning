@@ -5,6 +5,17 @@ import "@fontsource-variable/inter";
 const root = createRoot(document.getElementById("root")!);
 
 async function mountPage() {
+  if (/^\/presentation(?:\.html)?\/?$/.test(window.location.pathname)) {
+    const { PresentationPage } =
+      await import("./presentation/PresentationPage");
+    document.title = "Morning · Project presentation";
+    root.render(
+      <StrictMode>
+        <PresentationPage />
+      </StrictMode>,
+    );
+    return;
+  }
   if (/^\/app\/?$/.test(window.location.pathname)) {
     const [{ App }] = await Promise.all([
       import("./App"),
