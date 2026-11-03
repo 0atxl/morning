@@ -126,9 +126,30 @@ func TestSpeechProviderFailure(t *testing.T) {
 			handler := fixtureAPI(t, func(*http.Request) (*http.Response, error) { return tc.response, tc.err })
 			w := requestAPI(handler, "/api/speech", speechExample)
 			expectSpeechError(t, w, tc.status, tc.code, true)
+			wantUpstream := ""
+			if tc.name == "provider outage" {
+				wantUpstream = "503"
+			}
+			if got := w.Header().Get("X-Morning-Speech-Provider-Status"); got != wantUpstream {
+				t.Fatalf("upstream status %q, want %q", got, wantUpstream)
+			}
 			if strings.Contains(w.Body.String(), "private provider detail") {
 				t.Fatal("provider response leaked into the JSON error")
 			}
 		})
+	}
+}
+
+func TestSpeechRejectionKeepsOnlyKnownCodes(t *testing.T) {
+	for _, tc := range []struct{ detail, want string }{
+		{`{"code":"voice_not_found","message":"private response detail"}`, "voice_not_found"},
+		{`{"status":"invalid_api_key"}`, "invalid_api_key"},
+		{`{"code":"private response detail"}`, "unspecified"},
+	} {
+		resp := providerResponse(401, `{"detail":`+tc.detail+`}`)
+		if got := speechRejection(resp); got.Error() != "provider HTTP 401 ("+tc.want+")" {
+			t.Error("unexpected speech rejection classification")
+		}
+		resp.Body.Close()
 	}
 }

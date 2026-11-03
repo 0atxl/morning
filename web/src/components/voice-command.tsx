@@ -140,17 +140,25 @@ export function VoiceCommand({
       >
         {phase === "saved" ? <Check size={14} aria-hidden="true" /> : null}
         {status}
-        {view.playReply ? (
-          <Button size="sm" variant="outline" onClick={onRetrySpeech}>
-            Play reply
-          </Button>
-        ) : null}
         {listening ? (
           <span className="sr-only">
             Microphone is recording. Press Stop listening to finish.
           </span>
         ) : null}
       </div>
+      {view.playbackError ? (
+        <div className="voice-feedback feedback-line">
+          <p role="status">{view.playbackError}</p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={onRetrySpeech}
+          >
+            Play reply
+          </Button>
+        </div>
+      ) : null}
       {["requesting", "connecting", "finishing", "processing"].includes(
         phase,
       ) ? (

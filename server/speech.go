@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -23,6 +25,34 @@ type speechService struct {
 	voiceID string
 	client  http.Client
 	limiter *rateLimiter
+}
+
+type speechHTTPError struct {
+	status int
+	code   string
+}
+
+func (e speechHTTPError) Error() string {
+	return "provider HTTP " + strconv.Itoa(e.status) + " (" + e.code + ")"
+}
+
+// Only these fixed codes may leave the provider response. Its message can
+// contain private request data.
+func speechRejection(resp *http.Response) speechHTTPError {
+	var body struct{ Detail struct{ Code, Status string } }
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body)
+	code := body.Detail.Code
+	if code == "" {
+		code = body.Detail.Status
+	}
+	switch code {
+	case "invalid_api_key", "missing_permissions", "voice_not_found", "invalid_voice_id",
+		"quota_exceeded", "insufficient_credits", "payment_required", "paid_plan_required",
+		"model_access_denied", "detected_unusual_activity", "rate_limit_exceeded":
+	default:
+		code = "unspecified"
+	}
+	return speechHTTPError{status: resp.StatusCode, code: code}
 }
 
 func newSpeechService(transport http.RoundTripper) *speechService {
@@ -60,6 +90,12 @@ func (a *api) speak(w http.ResponseWriter, r *http.Request) {
 
 	audio, err := a.speech.synthesize(r.Context(), request.Text)
 	if err != nil {
+		// synthesize returns only fixed errors or a numeric HTTP status. The
+		// proxy can replace a 502 body, so keep the stage in the service log.
+		log.Printf("speech synthesis failed: %v", err)
+		if rejection, ok := err.(speechHTTPError); ok {
+			w.Header().Set("X-Morning-Speech-Provider-Status", strconv.Itoa(rejection.status))
+		}
 		writeProviderError(w, "", "speech", err)
 		return
 	}
@@ -83,7 +119,7 @@ func (s *speechService) synthesize(ctx context.Context, text string) ([]byte, er
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, errProviderUnavailable
+		return nil, speechRejection(resp)
 	}
 	// Buffer the short clip so a stalled or invalid response still yields a JSON error.
 	audio, err := io.ReadAll(io.LimitReader(resp.Body, maxSpeechAudio+1))

@@ -76,3 +76,46 @@ test("a late speech response after cleanup never starts audio", async (t) => {
   await started;
   assert.deepEqual(states, []);
 });
+
+test("after a gateway error, Play reply retries only speech and explains both failures", async (t) => {
+  const requests: string[] = [];
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (path: string, init: RequestInit) => {
+      requests.push(path);
+      assert.deepEqual(JSON.parse(String(init.body)), { text: "Draft saved." });
+      return requests.length === 1
+        ? new Response("<html>Bad gateway</html>", {
+            status: 502,
+            headers: { "Content-Type": "text/html" },
+          })
+        : new Response(null, {
+            status: 502,
+            headers: { "X-Morning-Speech-Provider-Status": "401" },
+          });
+    },
+  );
+  Object.defineProperty(globalThis, "window", {
+    value: {},
+    configurable: true,
+  });
+  t.after(() => {
+    Reflect.deleteProperty(globalThis, "window");
+  });
+
+  const errors: string[] = [];
+  const reply = new SpokenReply("Draft saved.", (state, message) => {
+    assert.equal(state, "blocked");
+    errors.push(message!);
+  });
+  t.after(() => reply.stop());
+  await reply.start();
+  reply.play();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(requests, ["/api/speech", "/api/speech"]);
+  assert.deepEqual(errors, [
+    "The speech request returned HTTP 502. This browser has no speech synthesizer.",
+    "ElevenLabs returned HTTP 401. This browser has no speech synthesizer.",
+  ]);
+});

@@ -47,7 +47,7 @@ export type VoiceView = {
   error: string;
   status: string;
   retryAt: number;
-  playReply: boolean;
+  playbackError: string;
   turnId?: string;
 };
 
@@ -60,7 +60,7 @@ export const readyVoice: VoiceView = {
   error: "",
   status: "",
   retryAt: 0,
-  playReply: false,
+  playbackError: "",
 };
 
 type Pending = {
@@ -124,7 +124,7 @@ export function useReminderFlow() {
 
   function speak(text: string) {
     cancelSpeech();
-    const reply = new SpokenReply(text, (state) => {
+    const reply = new SpokenReply(text, (state, message) => {
       if (!mounted.current || speech.current !== reply) return;
       reportExecution((previous) => ({
         ...previous,
@@ -133,7 +133,7 @@ export function useReminderFlow() {
       }));
       setView((previous) => ({
         ...previous,
-        playReply: state === "blocked",
+        playbackError: message ?? "",
       }));
     });
     speech.current = reply;
@@ -321,7 +321,7 @@ export function useReminderFlow() {
         ? "Open the draft to review and send in Gmail."
         : "",
       status: confirmation,
-      playReply: false,
+      playbackError: "",
     }));
     retainedAudio.current = [];
     // commitCommand resolves only from tx.oncomplete. A replay never speaks.
@@ -524,7 +524,7 @@ export function useReminderFlow() {
   }
 
   function retrySpeech() {
-    setView((previous) => ({ ...previous, playReply: false }));
+    setView((previous) => ({ ...previous, playbackError: "" }));
     speech.current?.play();
   }
 

@@ -14,6 +14,27 @@ export function confirmationText(results: readonly WorkspaceResult[]) {
 }
 
 type PlaybackState = "speaking" | "finished" | "blocked";
+type PlaybackReport = (state: PlaybackState, message?: string) => void;
+
+async function speechRequestError(response: Response) {
+  const status = response.headers.get("X-Morning-Speech-Provider-Status");
+  if (status && /^[1-5]\d\d$/.test(status))
+    return `ElevenLabs returned HTTP ${status}.`;
+  if (response.headers.get("content-type")?.includes("application/json")) {
+    const body = await response.json().catch(() => null);
+    switch (body?.error?.code) {
+      case "speech_not_configured":
+        return "Morning's server voice isn't configured.";
+      case "speech_provider_invalid_response":
+        return "The voice provider returned unusable audio.";
+      case "speech_provider_timeout":
+        return "The voice provider timed out.";
+      case "speech_provider_unavailable":
+        return "Morning couldn't get audio from the voice provider.";
+    }
+  }
+  return `The speech request returned HTTP ${response.status}.`;
+}
 
 // One committed command owns its fetch, audio and browser utterance. Keeping
 // the MP3 after a blocked attempt lets a click call play() during the gesture.
@@ -21,43 +42,71 @@ export class SpokenReply {
   private readonly abort = new AbortController();
   private clip: Blob | null = null;
   private release?: () => void;
+  private audioError = "";
 
   private readonly text: string;
-  private readonly report: (state: PlaybackState) => void;
+  private readonly report: PlaybackReport;
 
-  constructor(text: string, report: (state: PlaybackState) => void) {
+  constructor(text: string, report: PlaybackReport) {
     this.text = text;
     this.report = report;
   }
 
-  async start() {
+  async start(browserError?: string) {
     try {
       const response = await fetch("/api/speech", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "audio/mpeg" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "audio/mpeg, application/json;q=0.9",
+        },
         body: JSON.stringify({ text: this.text }),
         signal: AbortSignal.any([
           this.abort.signal,
           AbortSignal.timeout(12_000),
         ]),
       });
-      if (
-        response.ok &&
-        response.headers.get("content-type")?.startsWith("audio/mpeg")
+      if (!response.ok) {
+        this.audioError = await speechRequestError(response);
+      } else if (
+        response.headers
+          .get("content-type")
+          ?.split(";")[0]
+          .trim()
+          .toLowerCase() === "audio/mpeg"
       ) {
         const blob = await response.blob();
         if (blob.size && !this.abort.signal.aborted) this.clip = blob;
+        else this.audioError = "Morning returned an empty MP3.";
+      } else {
+        this.audioError = "Morning didn't return an MP3.";
       }
     } catch {
-      // The browser can still read the committed reply if the provider fails.
+      this.audioError = "The speech request didn't finish.";
     }
-    if (!this.abort.signal.aborted) this.play();
+    if (this.abort.signal.aborted) return;
+    if (this.clip) this.playClip(browserError);
+    else if (browserError) this.blocked(browserError);
+    else this.browserVoice();
   }
 
+  // The click can unlock either a cached clip or the native voice. If there's
+  // no clip and that voice fails again, retry only the speech request.
   play() {
     this.release?.();
     if (this.abort.signal.aborted) return;
-    if (!this.clip) return this.browserVoice();
+    if (this.clip) this.playClip();
+    else this.browserVoice((reason) => void this.start(reason));
+  }
+
+  private blocked(browserError: string) {
+    this.report("blocked", `${this.audioError} ${browserError}`);
+  }
+
+  private playClip(browserError?: string) {
+    if (!this.clip) return;
+    const fallback = () =>
+      browserError ? this.blocked(browserError) : this.browserVoice();
     try {
       const audio = new Audio();
       const url = URL.createObjectURL(this.clip);
@@ -71,13 +120,17 @@ export class SpokenReply {
         URL.revokeObjectURL(url);
         this.release = undefined;
       };
-      const failed = () => {
+      const failed = (reason: string) => {
         if (this.release !== cleanup) return;
+        this.audioError = reason;
         cleanup();
-        if (started) this.report("blocked");
-        else this.browserVoice();
+        if (started) this.report("blocked", reason);
+        else fallback();
       };
-      const timer = window.setTimeout(failed, 5000);
+      const timer = window.setTimeout(
+        () => failed("MP3 playback didn't start."),
+        5000,
+      );
       this.release = cleanup;
       audio.onplaying = () => {
         window.clearTimeout(timer);
@@ -89,27 +142,37 @@ export class SpokenReply {
         this.report("finished");
       };
       audio.onerror = () => {
+        const code = audio.error?.code;
         this.clip = null;
-        failed();
+        failed(
+          code
+            ? `MP3 playback failed (media error ${code}).`
+            : "MP3 playback failed.",
+        );
       };
       audio.src = url;
       void audio.play().catch((error: unknown) => {
         if (this.release !== cleanup) return;
         if (error instanceof DOMException && error.name === "NotSupportedError")
           this.clip = null;
-        failed();
+        failed(
+          error instanceof DOMException && error.name === "NotAllowedError"
+            ? "The browser blocked MP3 playback."
+            : "The browser couldn't play the MP3.",
+        );
       });
     } catch {
       this.release?.();
       this.clip = null;
-      this.browserVoice();
+      this.audioError = "The browser couldn't open the MP3.";
+      fallback();
     }
   }
 
-  private browserVoice() {
+  private browserVoice(failed = (reason: string) => this.blocked(reason)) {
     const synth = window.speechSynthesis;
     if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
-      this.report("blocked");
+      failed("This browser has no speech synthesizer.");
       return;
     }
     try {
@@ -127,7 +190,7 @@ export class SpokenReply {
       // Some browsers silently queue a gesture-blocked utterance.
       const timer = window.setTimeout(() => {
         cancel();
-        this.report("blocked");
+        failed("The browser voice didn't start.");
       }, 5000);
       this.release = cancel;
       utterance.onstart = () => {
@@ -138,14 +201,14 @@ export class SpokenReply {
         clear();
         this.report("finished");
       };
-      utterance.onerror = () => {
+      utterance.onerror = (event) => {
         clear();
-        this.report("blocked");
+        failed(`Browser speech failed (${event.error}).`);
       };
       synth.speak(utterance);
     } catch {
       this.release?.();
-      this.report("blocked");
+      failed("The browser couldn't start its voice.");
     }
   }
 
