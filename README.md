@@ -1,6 +1,6 @@
 # Morning
 
-Morning is a browser-based voice assistant for saving reminders and editable email drafts. Open the [landing page](https://morning.atuls.me/) or go straight to the [guest workspace](https://morning.atuls.me/app). No account is required.
+Morning is a browser-based voice assistant for reminders, editable email drafts and sourced answers. Open the [landing page](https://morning.atuls.me/) or go straight to the [guest workspace](https://morning.atuls.me/app). No account is required.
 
 **[Project documentation](docs/PROJECT.md)** follows the example below through the code and includes Atul Kumar's solo contribution and the verified Actions runs.
 
@@ -28,11 +28,13 @@ Saved records, contacts and manual edits stay in this browser profile. Quick Vie
 
 Reminder Quick View offers **Download .ics** and **Add to Google Calendar**. Both create a one-minute entry at the saved due time. Review and save or import it in your calendar. Calendar copies do not sync with later edits in Morning.
 
-The backend also implements calendar-event responses and meeting minutes. Their browser recording and event-scheduling flows are pending. This branch adds read-only lookup providers and a result validator; voice-command, conversation storage and dashboard integration for search are still pending. Packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
+The backend also implements calendar-event responses and meeting minutes. Their browser recording and event-scheduling flows are pending. Packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
 
 ## Read-only lookup setup
 
-The provider layer supports hotel and general web search through [Tavily's hosted MCP](https://docs.tavily.com/documentation/mcp), news search, [Open-Meteo current weather](https://open-meteo.com/en/docs), and city time from the server clock and IANA time zones. It is not yet connected to the mic on this branch. After integration, guests use Morning's server credentials and need no MCP client, provider account or key.
+The existing mic supports hotel, news and general web search through [Tavily's hosted MCP](https://docs.tavily.com/documentation/mcp), [Open-Meteo current weather](https://open-meteo.com/en/docs), and city time from the server clock and IANA time zones. Guests use Morning's server credentials and need no MCP client, provider account or key. The integration is available on this review branch; deployment and live-provider verification remain separate steps.
+
+Say "Find three hotels near Jaipur railway station", "What's the weather in Pune right now?", or "What's the latest technology news in India today?" Then stop recording. The lookup shows Searching and saves an answer with its sources in that conversation before speaking. Open its result row for source links and times in Quick View. History and Play reply use the saved answer. For "hotels near me", answer "Which city or landmark?" by recording the place, or choose Cancel search. The same mic also handles "What's the latest stable Go release?" and "What time is it in Tokyo?".
 
 For local setup, add `TAVILY_API_KEY` to `server/.env`. On the existing Azure VM, edit **`/etc/morning/server.env`** with `sudoedit` and add `TAVILY_API_KEY` there. The `morning-api.service` systemd unit reads that file. Restart it with `sudo systemctl restart morning-api.service` when enabling the reviewed release. Keep the file's existing `root:morning` ownership and `0640` permissions. This is VM configuration, not an Azure App Service setting or GitHub Actions secret. Never put the key in a `VITE_` variable, browser storage or an MCP URL.
 
