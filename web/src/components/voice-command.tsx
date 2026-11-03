@@ -40,15 +40,16 @@ export function VoiceCommand({
   const listening = phase === "listening";
   const blocked = !canToggleRecorder(phase);
   const [clock, setClock] = useState(Date.now);
+  const retryDeadline = Math.max(view.retryAt, view.lookupRetryAt ?? 0);
 
   useEffect(() => {
-    if (!view.retryAt || phase !== "error") return;
+    if (!retryDeadline || phase !== "error") return;
     setClock(Date.now());
     const interval = window.setInterval(() => setClock(Date.now()), 1000);
     return () => window.clearInterval(interval);
-  }, [view.retryAt, phase]);
+  }, [retryDeadline, phase]);
 
-  const wait = Math.max(0, Math.ceil((view.retryAt - clock) / 1000));
+  const wait = Math.max(0, Math.ceil((retryDeadline - clock) / 1000));
   const status =
     phase === "loading"
       ? "Loading saved results…"
@@ -59,7 +60,9 @@ export function VoiceCommand({
           : phase === "finishing"
             ? "Finishing transcription…"
             : phase === "processing"
-              ? "Working…"
+              ? view.status === "Searching"
+                ? "Searching"
+                : "Working…"
               : phase === "saving"
                 ? "Saving in this browser…"
                 : view.status;
@@ -76,7 +79,9 @@ export function VoiceCommand({
             : phase === "saving"
               ? "Saving"
               : phase === "processing"
-                ? "Processing"
+                ? view.status === "Searching"
+                  ? "Searching"
+                  : "Processing"
                 : "Talk to Morning";
   const hasWords = Boolean(captions.final || captions.interim);
 
@@ -91,7 +96,7 @@ export function VoiceCommand({
           variant="ghost"
           className="voice-trigger"
           onClick={onToggle}
-          disabled={disabled || blocked || wait > 0}
+          disabled={disabled || blocked || view.retryAt > clock}
           aria-pressed={listening}
           aria-describedby="capture-notice recorder-shortcut-description"
           aria-controls="command-transcript"
@@ -175,6 +180,11 @@ export function VoiceCommand({
         <div className="voice-feedback">
           <div className="feedback-line">
             <p role="status">{view.question}</p>
+            {view.lookupContext && (
+              <Button variant="outline" onClick={onCancel}>
+                Cancel search
+              </Button>
+            )}
             {!view.options.length &&
             !view.reminderOptions.length &&
             !view.draftOptions.length ? (
@@ -235,7 +245,9 @@ export function VoiceCommand({
             </div>
           ) : (
             <p className="revised-command">
-              Say the full revised command, including any reminder time.
+              {view.lookupContext
+                ? "Say the city or landmark to finish your search."
+                : "Say the full revised command, including any reminder time."}
             </p>
           )}
         </div>

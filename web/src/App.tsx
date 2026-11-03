@@ -6,6 +6,7 @@ import {
   FileText,
   Plus,
   Users,
+  Search,
 } from "lucide-react";
 import { ReminderAlerts } from "@/components/reminder-alerts";
 import { ResultQuickView } from "@/components/result-quick-view";
@@ -19,16 +20,22 @@ import { useReminderFlow } from "@/hooks/use-reminder-flow";
 import { useRecorderShortcut } from "@/hooks/use-recorder-shortcut";
 import { canToggleRecorder } from "@/lib/recorder-shortcut";
 import { earlierActivity, type StoredResult } from "@/lib/reminder-store";
-import { formatDue } from "@/lib/results";
+import type { StoredLookup } from "@/lib/reminder-store";
+import { formatDue, type WorkspaceResult } from "@/lib/results";
 
 function ResultRow({
   result,
   onOpen,
 }: {
-  result: StoredResult;
+  result: WorkspaceResult;
   onOpen: (trigger: HTMLButtonElement) => void;
 }) {
-  const Icon = result.kind === "draft" ? FileText : CalendarClock;
+  const Icon =
+    result.kind === "lookup"
+      ? Search
+      : result.kind === "draft"
+        ? FileText
+        : CalendarClock;
   return (
     <li>
       <Button
@@ -39,6 +46,12 @@ function ResultRow({
       >
         <Icon className="result-icon" aria-hidden="true" />
         <span className="result-name">{result.title}</span>
+        {result.kind === "lookup" && (
+          <span className="result-time">
+            {result.lookup.sources.length}{" "}
+            {result.lookup.sources.length === 1 ? "source" : "sources"}
+          </span>
+        )}
         {result.kind === "reminder" && (
           <time
             className="result-time"
@@ -65,7 +78,7 @@ export function App() {
   const returnFocus = useRef<HTMLButtonElement | null>(null);
   const contactsButton = useRef<HTMLButtonElement | null>(null);
   const selected =
-    live.records.find((result) => result.id === selectedId) ?? null;
+    live.results.find((result) => result.id === selectedId) ?? null;
   const canRecord = () =>
     !live.recorderUnavailable && canToggleRecorder(view.phase, view.retryAt);
 
@@ -112,8 +125,8 @@ export function App() {
     (session) => session.id === selectedSession,
   )?.label;
 
-  const resultsByTurn = new Map<string, StoredResult[]>();
-  for (const result of live.records) {
+  const resultsByTurn = new Map<string, (StoredResult | StoredLookup)[]>();
+  for (const result of live.results) {
     const group = resultsByTurn.get(result.commandId) ?? [];
     group.push(result);
     resultsByTurn.set(result.commandId, group);
@@ -251,7 +264,7 @@ export function App() {
                   </div>
                 );
               })}
-              {!live.records.length && (
+              {!live.results.length && (
                 <p className="results-empty">
                   No saved results in this session.
                 </p>
@@ -290,9 +303,10 @@ export function App() {
       </div>
       <ResultQuickView
         result={selected}
-        results={live.records}
+        results={live.results}
         onSelect={setSelectedId}
         onSave={live.edit}
+        onPlayReply={live.playReply}
         onRestoreFocus={() => returnFocus.current?.focus()}
       />
       <ContactsDialog

@@ -11,6 +11,8 @@ import {
 import {
   addGuestContact,
   commitCommand,
+  commitLookup,
+  lookupRecord,
   loadWorkspace,
   earlierActivity,
   selectWorkspaceSession,
@@ -22,6 +24,7 @@ import {
   type StoredReminder,
   type StoredDraft,
 } from "@/lib/reminder-store";
+import { lookupProgress, type LookupContext } from "@/lib/lookup-result";
 import { VoiceCapture, type CapturePhase } from "@/lib/voice-capture";
 import type { Captions } from "@/lib/transcript";
 import { confirmationText, SpokenReply } from "@/lib/spoken-reply";
@@ -53,9 +56,11 @@ export type VoiceView = {
   error: string;
   status: string;
   retryAt: number;
+  lookupRetryAt?: number;
   playbackError: string;
   replyAvailable: boolean;
   turnId?: string;
+  lookupContext?: LookupContext;
 };
 
 export const readyVoice: VoiceView = {
@@ -108,6 +113,7 @@ export function useReminderFlow() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [selectedSession, setSelectedSession] = useState("");
+  const selectedSessionRef = useRef("");
   const [commandSession, setCommandSession] = useState("");
   const [selecting, setSelecting] = useState(false);
   const selectingRef = useRef(false);
@@ -126,12 +132,14 @@ export function useReminderFlow() {
   const requestAbort = useRef<AbortController | null>(null);
   const loadFailed = useRef(false);
   const speech = useRef<SpokenReply | null>(null);
+  const spokenText = useRef("");
 
   const current = (id: number) => mounted.current && generation.current === id;
 
   function cancelSpeech() {
     speech.current?.stop();
     speech.current = null;
+    spokenText.current = "";
   }
 
   function speak(text: string, saved = true) {
@@ -149,6 +157,7 @@ export function useReminderFlow() {
       }));
     });
     speech.current = reply;
+    spokenText.current = text;
     setView((previous) => ({ ...previous, replyAvailable: true }));
     void reply.start();
   }
@@ -165,6 +174,7 @@ export function useReminderFlow() {
       setSessions(stored.sessions);
       setTurns(stored.turns);
       setSelectedSession(stored.selectedSession);
+      selectedSessionRef.current = stored.selectedSession;
       setContacts(stored.contacts);
       loadFailed.current = false;
       setView((previous) => ({ ...previous, phase: "ready", error: "" }));
@@ -190,7 +200,9 @@ export function useReminderFlow() {
       const { selected, created } = await selectWorkspaceSession(id);
       if (!mounted.current) return;
       if (created) setSessions((previous) => [...previous, created]);
+      cancelSpeech();
       setSelectedSession(selected);
+      selectedSessionRef.current = selected;
     } catch {
       if (mounted.current)
         setSelectionError("Couldn't switch sessions. Try again.");
@@ -229,18 +241,27 @@ export function useReminderFlow() {
     const command = pending.current;
     if (!command)
       throw new Error("No command is available. Please record again.");
+    const searching =
+      !command.response &&
+      lookupProgress(
+        command.request.transcript,
+        command.request.lookup_context,
+      );
     reportExecution({
       requestId: command.request.command_id,
       stages: command.request.selected_contact_id ? ["MAIL"] : ["ORB"],
-      status: command.request.selected_contact_id
-        ? "Preparing your draft"
-        : "Working",
+      status: searching
+        ? "Searching"
+        : command.request.selected_contact_id
+          ? "Preparing your draft"
+          : "Working",
       running: true,
     });
     setView((previous) => ({
       ...previous,
       turnId: command.turn.id,
       phase: "processing",
+      status: searching ? "Searching" : "",
       error: "",
     }));
     if (!command.turnSaved) {
@@ -254,6 +275,52 @@ export function useReminderFlow() {
       requestAbort.current = abort;
       command.response = await interpretCommand(command.request, abort.signal);
       if (!current(id)) return;
+    }
+    if (command.response.kind === "lookup") {
+      setView((previous) => ({ ...previous, phase: "saving", error: "" }));
+      saving.current = true;
+      let outcome: Awaited<ReturnType<typeof commitLookup>>;
+      try {
+        outcome = await commitLookup(command.turn, command.response.result);
+      } finally {
+        saving.current = false;
+      }
+      command.turn = outcome.turn;
+      if (!current(id)) return;
+      setTurns((previous) =>
+        previous.map((turn) =>
+          turn.id === command.turn.id ? command.turn : turn,
+        ),
+      );
+      reportExecution({
+        requestId: command.request.command_id,
+        stages: ["ORB"],
+        status: "Answer saved",
+        running: false,
+      });
+      setView((previous) => ({
+        ...previous,
+        phase: "saved",
+        status: command.turn.lookup!.answer,
+        question: "",
+        options: [],
+        reminderOptions: [],
+        draftOptions: [],
+        lookupContext: undefined,
+        deliveryNotice: "",
+        error: "",
+        playbackError: "",
+        replyAvailable: true,
+      }));
+      retainedAudio.current = [];
+      // A storage retry reuses command.response. Changing sessions cannot move
+      // this snapshot or make a background conversation speak over the current one.
+      if (
+        outcome.created &&
+        selectedSessionRef.current === command.turn.sessionId
+      )
+        speak(command.turn.lookup!.speech);
+      return;
     }
     if (command.response.kind === "reply") {
       const text = command.response.text;
@@ -286,7 +353,17 @@ export function useReminderFlow() {
       return;
     }
     if (command.response.kind === "clarification") {
-      const { question, options } = command.response;
+      const { question, options, lookupContext } = command.response;
+      if (lookupContext) {
+        command.turn = { ...command.turn, reply: question, lookupContext };
+        await storeTurn(command.turn);
+        if (!current(id)) return;
+        setTurns((previous) =>
+          previous.map((turn) =>
+            turn.id === command.turn.id ? command.turn : turn,
+          ),
+        );
+      }
       const reminderOptions = /which\b.*\b(?:reminder|task)/i.test(question)
         ? command.reminders
         : [];
@@ -312,8 +389,14 @@ export function useReminderFlow() {
         options,
         reminderOptions,
         draftOptions,
+        lookupContext,
         error: "",
       }));
+      if (
+        lookupContext &&
+        selectedSessionRef.current === command.turn.sessionId
+      )
+        speak(question, false);
       return;
     }
     setView((previous) => ({ ...previous, phase: "saving", error: "" }));
@@ -421,6 +504,9 @@ export function useReminderFlow() {
       phase: "error",
       error: errorMessage(error),
       retryAt: error instanceof RequestError ? error.retryAt : 0,
+      ...(error instanceof RequestError && error.lookupOnly
+        ? { retryAt: 0, lookupRetryAt: error.retryAt }
+        : { lookupRetryAt: 0 }),
     }));
   }
 
@@ -436,6 +522,14 @@ export function useReminderFlow() {
     const sessionId = selectedSession;
     if (!sessionId || sessionId === earlierActivity || selectingRef.current)
       return;
+    const latestTurn = turns
+      .filter((turn) => turn.sessionId === sessionId)
+      .at(-1);
+    const lookupContext =
+      pending.current?.turn.sessionId === sessionId &&
+      pending.current.response?.kind === "clarification"
+        ? pending.current.response.lookupContext
+        : latestTurn?.lookupContext;
     const reminders = records
       .filter(
         (record): record is StoredReminder =>
@@ -518,32 +612,40 @@ export function useReminderFlow() {
         turnSaved: false,
         reminders,
         drafts,
-        request: {
-          command_id: turn.id,
-          transcript,
-          now: turn.createdAt,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          contacts: relevantContacts(contacts, transcript),
-          ...(reminders.length === 1
-            ? {
-                reminder_context: {
-                  id: reminders[0].id,
-                  due_at: reminders[0].dueAt,
-                },
-              }
-            : {}),
-          ...(drafts.length === 1
-            ? {
-                draft_context: {
-                  id: drafts[0].id,
-                  subject: drafts[0].subject,
-                  body: drafts[0].body,
-                  recipient: drafts[0].recipient,
-                  to: drafts[0].to,
-                },
-              }
-            : {}),
-        },
+        request: lookupContext
+          ? {
+              command_id: turn.id,
+              transcript,
+              now: turn.createdAt,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              lookup_context: lookupContext,
+            }
+          : {
+              command_id: turn.id,
+              transcript,
+              now: turn.createdAt,
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+              contacts: relevantContacts(contacts, transcript),
+              ...(reminders.length === 1
+                ? {
+                    reminder_context: {
+                      id: reminders[0].id,
+                      due_at: reminders[0].dueAt,
+                    },
+                  }
+                : {}),
+              ...(drafts.length === 1
+                ? {
+                    draft_context: {
+                      id: drafts[0].id,
+                      subject: drafts[0].subject,
+                      body: drafts[0].body,
+                      recipient: drafts[0].recipient,
+                      to: drafts[0].to,
+                    },
+                  }
+                : {}),
+            },
       };
       await savePending(id);
     } catch (error) {
@@ -560,7 +662,11 @@ export function useReminderFlow() {
   }
 
   async function retry() {
-    if (busy.current || Date.now() < view.retryAt) return;
+    if (
+      busy.current ||
+      Date.now() < Math.max(view.retryAt, view.lookupRetryAt ?? 0)
+    )
+      return;
     if (loadFailed.current) {
       await load();
       return;
@@ -582,15 +688,17 @@ export function useReminderFlow() {
     }
   }
 
-  function cancel() {
+  async function cancel() {
     if (saving.current || view.phase === "saving" || view.phase === "loading")
       return;
+    cancelSpeech();
     generation.current++;
     capture.current?.cancel();
     capture.current = null;
     captureOwner.current = null;
     requestAbort.current?.abort();
     busy.current = false;
+    pending.current = null;
     reportExecution({ ...idleExecution, status: "Request cancelled" });
     setView((previous) => ({
       ...previous,
@@ -600,8 +708,35 @@ export function useReminderFlow() {
       options: [],
       reminderOptions: [],
       draftOptions: [],
+      lookupContext: undefined,
       status: "",
     }));
+    const latest = turns
+      .filter((turn) => turn.sessionId === selectedSession)
+      .at(-1);
+    if (latest?.lookupContext) {
+      busy.current = true;
+      saving.current = true;
+      setView((previous) => ({ ...previous, phase: "saving" }));
+      const cancelled = { ...latest, reply: "Search cancelled." };
+      delete cancelled.lookupContext;
+      try {
+        await storeTurn(cancelled);
+        if (mounted.current)
+          setTurns((previous) =>
+            previous.map((turn) =>
+              turn.id === cancelled.id ? cancelled : turn,
+            ),
+          );
+        if (mounted.current)
+          setView((previous) => ({ ...previous, phase: "ready" }));
+      } catch (error) {
+        if (mounted.current) showError(error);
+      } finally {
+        saving.current = false;
+        busy.current = false;
+      }
+    }
   }
 
   async function edit(result: WorkspaceResult) {
@@ -642,7 +777,14 @@ export function useReminderFlow() {
 
   function retrySpeech() {
     setView((previous) => ({ ...previous, playbackError: "" }));
-    speech.current?.play();
+    const latest = turns
+      .filter((turn) => turn.sessionId === selectedSession)
+      .at(-1);
+    const text = latest?.lookup?.speech ?? latest?.reply;
+    if (speech.current && (!text || text === spokenText.current))
+      speech.current.play();
+    else if (text) speak(text, !latest?.lookupContext);
+    else speech.current?.play();
   }
 
   async function chooseContact(contactId: string) {
@@ -759,11 +901,26 @@ export function useReminderFlow() {
           turnId: latest.id,
           captions: { final: latest.transcript, interim: "" },
           status: latest.reply ?? "",
+          lookupContext: latest.lookupContext,
+          phase: latest.lookupContext
+            ? ("clarification" as const)
+            : visibleView.phase,
+          question: latest.lookupContext
+            ? (latest.reply ?? "Which city or landmark?")
+            : "",
+          replyAvailable: Boolean(latest.lookup || latest.reply),
         }
       : visibleView,
     orbCore,
     execution: ownCommand ? execution : idleExecution,
     records: selectedRecords,
+    results: [
+      ...selectedRecords,
+      ...sessionTurns.flatMap((turn) => {
+        const record = lookupRecord(turn);
+        return record ? [record] : [];
+      }),
+    ],
     sessions,
     turns,
     sessionTurns,
@@ -789,6 +946,10 @@ export function useReminderFlow() {
     cancel,
     edit,
     retrySpeech,
+    playReply: (text: string) => {
+      if (speech.current && spokenText.current === text) speech.current.play();
+      else speak(text);
+    },
     stop,
     startHold,
     releaseHold,

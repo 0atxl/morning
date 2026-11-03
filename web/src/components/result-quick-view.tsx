@@ -10,6 +10,8 @@ import {
   Download,
   FileText,
   Pencil,
+  Search,
+  Volume2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,6 +42,7 @@ import {
   resultText,
   type WorkspaceResult,
 } from "@/lib/results";
+import { safeLookupLink, type LookupResult } from "@/lib/lookup-result";
 
 type Props = {
   result: WorkspaceResult | null;
@@ -47,6 +50,7 @@ type Props = {
   onSelect: (id: string | null) => void;
   onSave: (result: WorkspaceResult) => Promise<void>;
   onRestoreFocus: () => void;
+  onPlayReply: (text: string) => void;
 };
 
 export function ResultQuickView({
@@ -55,6 +59,7 @@ export function ResultQuickView({
   onSelect,
   onSave,
   onRestoreFocus,
+  onPlayReply,
 }: Props) {
   const content = useRef<HTMLDivElement>(null);
   const index = results.findIndex((item) => item.id === result?.id);
@@ -101,7 +106,9 @@ export function ResultQuickView({
       >
         <div className="quick-view-header">
           <DialogTitle className="quick-view-title">
-            {result?.kind === "draft" ? (
+            {result?.kind === "lookup" ? (
+              <Search aria-hidden="true" />
+            ) : result?.kind === "draft" ? (
               <FileText aria-hidden="true" />
             ) : (
               <CalendarClock aria-hidden="true" />
@@ -144,7 +151,12 @@ export function ResultQuickView({
           Escape or Space to close. Use left and right arrows to browse results.
         </DialogDescription>
         {result ? (
-          <ResultContent key={result.id} result={result} onSave={onSave} />
+          <ResultContent
+            key={result.id}
+            result={result}
+            onSave={onSave}
+            onPlayReply={onPlayReply}
+          />
         ) : null}
       </DialogContent>
     </Dialog>
@@ -154,9 +166,11 @@ export function ResultQuickView({
 function ResultContent({
   result,
   onSave,
+  onPlayReply,
 }: {
   result: WorkspaceResult;
   onSave: Props["onSave"];
+  onPlayReply: Props["onPlayReply"];
 }) {
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -174,6 +188,7 @@ function ResultContent({
   const [body, setBody] = useState(result.kind === "draft" ? result.body : "");
 
   function beginEdit() {
+    if (result.kind === "lookup") return;
     setTitle(result.title);
     if (result.kind === "reminder") setDue(localInputDate(result.dueAt));
     else {
@@ -188,7 +203,7 @@ function ResultContent({
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!editing || savingRef.current) return;
+    if (!editing || savingRef.current || result.kind === "lookup") return;
     setActionError("");
     let updated: WorkspaceResult;
     if (result.kind === "reminder") {
@@ -326,6 +341,8 @@ function ResultContent({
               </>
             )}
           </fieldset>
+        ) : result.kind === "lookup" ? (
+          <LookupContent lookup={result.lookup} />
         ) : result.kind === "draft" ? (
           <>
             <dl className="draft-metadata">
@@ -410,10 +427,20 @@ function ResultContent({
             </>
           ) : (
             <>
-              <Button type="button" variant="outline" onClick={beginEdit}>
-                <Pencil />
-                Edit
-              </Button>
+              {result.kind === "lookup" ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => onPlayReply(result.lookup.speech)}
+                >
+                  <Volume2 /> Play reply
+                </Button>
+              ) : (
+                <Button type="button" variant="outline" onClick={beginEdit}>
+                  <Pencil />
+                  Edit
+                </Button>
+              )}
               <Button type="button" variant="outline" onClick={copy}>
                 <Copy />
                 Copy
@@ -438,7 +465,7 @@ function ResultContent({
                     Send via Gmail
                   </a>
                 </Button>
-              ) : (
+              ) : result.kind === "reminder" ? (
                 <>
                   <Button
                     type="button"
@@ -460,11 +487,99 @@ function ResultContent({
                     </a>
                   </Button>
                 </>
-              )}
+              ) : null}
             </>
           )}
         </div>
       </div>
     </form>
+  );
+}
+
+function lookupTime(instant: string, timezone?: string) {
+  return new Intl.DateTimeFormat("en", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+    ...(timezone ? { timeZone: timezone } : {}),
+  }).format(new Date(instant));
+}
+
+function LookupContent({ lookup }: { lookup: LookupResult }) {
+  return (
+    <div className="lookup-details">
+      <p className="draft-body">{lookup.answer}</p>
+      <dl className="draft-metadata">
+        <div>
+          <dt>Looked up</dt>
+          <dd>
+            <time dateTime={lookup.looked_up_at}>
+              {lookupTime(lookup.looked_up_at, lookup.timezone)}
+            </time>
+          </dd>
+        </div>
+        {lookup.data_time && (
+          <div>
+            <dt>Data time</dt>
+            <dd>
+              <time dateTime={lookup.data_time}>
+                {lookupTime(lookup.data_time, lookup.timezone)}
+              </time>
+            </dd>
+          </div>
+        )}
+        {lookup.window_start && lookup.window_end && (
+          <div>
+            <dt>News window</dt>
+            <dd>
+              {lookupTime(lookup.window_start, lookup.timezone)} to{" "}
+              {lookupTime(lookup.window_end, lookup.timezone)}
+            </dd>
+          </div>
+        )}
+      </dl>
+      {lookup.sources.length > 0 && (
+        <ul className="lookup-sources" aria-label="Sources">
+          {lookup.sources.map((source, index) => {
+            const href = safeLookupLink(source.url);
+            if (!href) return null;
+            return (
+              <li key={`${source.url}:${index}`}>
+                <Button
+                  asChild
+                  variant="outline"
+                  className="lookup-source-link"
+                >
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`${source.title} (opens in a new tab)`}
+                  >
+                    <span>{source.title}</span>
+                    <ArrowUpRight aria-hidden="true" />
+                  </a>
+                </Button>
+                <p className="field-hint">{source.publisher}</p>
+                {source.published_at && (
+                  <p className="field-hint">
+                    Published{" "}
+                    <time dateTime={source.published_at}>
+                      {lookupTime(source.published_at, lookup.timezone)}
+                    </time>
+                  </p>
+                )}
+                {source.excerpt && (
+                  <p className="field-hint">{source.excerpt}</p>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
   );
 }

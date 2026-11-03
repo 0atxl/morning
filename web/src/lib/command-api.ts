@@ -1,4 +1,10 @@
 import type { Contact, ContactOption } from "./contacts.ts";
+import {
+  parseLookupContext,
+  parseLookupResult,
+  type LookupContext,
+  type LookupResult,
+} from "./lookup-result.ts";
 
 export type CommandRequest = {
   command_id: string;
@@ -17,6 +23,7 @@ export type CommandRequest = {
     to: string;
   };
   selected_draft_id?: string;
+  lookup_context?: LookupContext;
 };
 
 export type ReminderAction = {
@@ -47,14 +54,22 @@ export type CommandAction =
 export type CommandResponse =
   | { kind: "actions"; actions: CommandAction[] }
   | { kind: "reply"; text: string }
-  | { kind: "clarification"; question: string; options: ContactOption[] };
+  | { kind: "lookup"; result: LookupResult }
+  | {
+      kind: "clarification";
+      question: string;
+      options: ContactOption[];
+      lookupContext?: LookupContext;
+    };
 
 export class RequestError extends Error {
   readonly retryAt: number;
-  constructor(message: string, retryAt = 0) {
+  readonly lookupOnly: boolean;
+  constructor(message: string, retryAt = 0, lookupOnly = false) {
     super(message);
     this.name = "RequestError";
     this.retryAt = retryAt;
+    this.lookupOnly = lookupOnly;
   }
 }
 
@@ -96,6 +111,9 @@ export async function postJSON(
       retryAfter > 0 && Number.isFinite(retryAfter)
         ? Date.now() + retryAfter * 1000
         : 0,
+      typeof error?.code === "string" &&
+        (error.code.startsWith("lookup_") ||
+          error.code === "search_not_configured"),
     );
   }
   if (!object(data))
@@ -154,6 +172,67 @@ export function parseCommandResponse(
       "Morning returned a mismatched command response. Please retry.",
     );
   }
+  if (value.lookup !== undefined || value.lookup_context !== undefined) {
+    if (
+      value.actions.length !== 0 ||
+      value.reply !== undefined ||
+      value.clarification_options !== undefined ||
+      Object.keys(value).some(
+        (key) =>
+          ![
+            "command_id",
+            "actions",
+            "clarification",
+            "lookup",
+            "lookup_context",
+          ].includes(key),
+      )
+    )
+      throw new RequestError(
+        "Morning returned a mixed lookup and action. Please retry.",
+      );
+    if (value.lookup !== undefined) {
+      if (value.lookup_context !== undefined || value.clarification !== null)
+        throw new RequestError(
+          "Morning returned an incomplete lookup. Please retry.",
+        );
+      const result = parseLookupResult(value.lookup);
+      if (
+        request.lookup_context &&
+        result.kind !== request.lookup_context.query.kind
+      )
+        throw new RequestError(
+          "Morning returned a different lookup. Please retry.",
+        );
+      return { kind: "lookup", result };
+    }
+    if (
+      typeof value.clarification !== "string" ||
+      !value.clarification.trim() ||
+      [...value.clarification].length > 240
+    )
+      throw new RequestError(
+        "Morning returned an invalid place question. Please retry.",
+      );
+    const lookupContext = parseLookupContext(value.lookup_context);
+    if (
+      request.lookup_context &&
+      lookupContext.query.kind !== request.lookup_context.query.kind
+    )
+      throw new RequestError(
+        "Morning returned a different pending lookup. Please retry.",
+      );
+    return {
+      kind: "clarification",
+      question: value.clarification.trim(),
+      options: [],
+      lookupContext,
+    };
+  }
+  if (request.lookup_context)
+    throw new RequestError(
+      "Morning did not finish the pending lookup. No action was saved.",
+    );
   if (
     value.actions.length === 0 &&
     value.clarification === null &&

@@ -58,3 +58,12 @@ npm run build
 Tests, manual browser QA, smoke checks, provider probes and CI execution require the user's explicit confirmation for each run. The Node fixture cases in `tests/` cover transcript finalization, draft-only and combined commands, contact selection, version-1 upgrades, atomic rollback, concurrent saves, replay after editing, contact persistence and physical Right Ctrl hold/release handling. They have not run. `fake-indexeddb` is a test-only dependency for isolated in-memory storage cases; it is not included in the application bundle. No automatic test workflow is added. Any proposed browser or provider run must identify its cases, revision and live provider use before approval.
 
 Shared UI components live in `src/components/ui/`. They come from the [official shadcn/ui New York registry](https://ui.shadcn.com/docs/components/radix/button), with Morning's styles and motion choices. Their MIT notice is included in that directory. Fonts are served locally from the installed package.
+## Read-only voice lookups
+
+The existing mic accepts hotels, weather, news, general factual questions and city-time requests. The command parser treats a lookup as a read-only result and rejects mixed lookup/action responses. Search terms and location go through the server; guests provide no MCP client or provider key.
+
+The browser saves a lookup's answer, sources and lookup time together on its conversation turn before speaking. Each lookup has a compact result row that opens the existing Quick View. Source links open in a new tab, and publication time, weather data time and lookup time have separate labels. Queries without a location ask for one; recording the reply continues the same lookup. Cancel search clears that pending question.
+
+History and Play reply read the saved snapshot. A persistence retry uses its cached command response, while an explicit retry after a provider failure can retrieve fresh information. Switching sessions during retrieval keeps the result in its original conversation. Lookup rate limits disable lookup retries while leaving the mic available for other commands.
+
+The integration fixtures are defined in `tests/lookup-flow.test.ts` and `tests/lookup-result.test.ts`. No tests, browser QA or live-provider probes were executed for this change. The manual lookup workflow requires explicit approval at the commit to be checked.

@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "structuredContent": {
+      "results": [
+        {
+          "title": "Go downloads",
+          "url": "https://go.dev/dl/",
+          "content": "Synthetic fixture only. Go 1.99.2 is the latest stable release."
+        },
+        {
+          "title": "Go 1.100 release candidate",
+          "url": "https://go.dev/dl/#unstable",
+          "content": "Go 1.100rc1 is a release candidate, not stable."
+        }
+      ]
+    },
+    "content": []
+  }
+}

@@ -48,6 +48,14 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 	if strings.TrimSpace(request.Transcript) == "" || len(request.Transcript) > 8192 {
 		return time.Time{}, nil, errors.New("transcript must contain 1 to 8192 bytes of text.")
 	}
+	if request.LookupContext != nil {
+		pending := request.LookupContext
+		if validateLookup(pending.Query) != nil || (pending.Query.Kind != "hotels" && pending.Query.Kind != "weather" && pending.Query.Kind != "time") ||
+			(pending.City != "" && !validText(pending.City, 100)) || len(request.Contacts) > 0 || request.SelectedContactID != nil ||
+			request.ReminderContext != nil || request.SelectedReminderID != nil || request.DraftContext != nil || request.SelectedDraftID != nil {
+			return time.Time{}, nil, errors.New("lookup_context must contain only a pending place lookup, without action context.")
+		}
+	}
 	now, err := time.Parse(time.RFC3339Nano, request.Now)
 	if err != nil {
 		return time.Time{}, nil, errors.New("now must be an RFC 3339 timestamp with a timezone offset or Z.")

@@ -399,3 +399,47 @@ The custom test transport returns local `testdata/` fixtures and cannot reach li
 Smoke and browser E2E verification require a separately approved, manually dispatched GitHub Actions run with the cases, commit and live-provider usage stated. Backend fixture tests do not verify microphone capture, IndexedDB transactions, duplicate saves after an edit, or browser speech.
 
 The correction fixture cases cover the Friday time change, replay of the same request, missing context, vague times, invalid provider actions and malformed reminder snapshots. The backend stops at the validated response.
+
+## Read-only lookup provider layer
+
+The existing Deepgram to `/api/commands` flow supports one read-only lookup at a time. Groq identifies its kind and arguments; Go validates them, retrieves facts and returns a lookup snapshot. A lookup cannot accompany reminder, draft, calendar or conversational-reply actions. The browser commits its answer and sources on the originating conversation turn before speaking. There is no separate lookup endpoint.
+
+The API initializes one `newLookupService(providers, clock)` per API instance and uses `clientAddress(request)` for the visitor's rate-limit identity. Do not create a service per request, which would reset its limits. The model's internal lookup intent accepts these arguments:
+
+```json
+{"kind":"hotels","terms":"","place":"Jaipur railway station","today":false}
+```
+
+Kinds are `hotels`, `weather`, `news`, `web` and `time`. Weather and time use only `place`. News and web require concise `terms`; news can also supply a location and `today`. Hotel search uses only the named city or landmark. Send these minimal arguments to providers, never the conversation, contacts, reminder IDs or a visitor identity. Groq selects exact evidence from bounded public snippets. Go checks those excerpts against the returned sources, builds the result, and never converts source data into actions or another tool request. Hotel results omit distances, rates and availability.
+
+The command response always echoes `command_id` and has `actions: []` for a lookup. It contains either `lookup` with `clarification: null`, or a `clarification` with `lookup_context`. When location is missing, the question is `Which city or landmark?`. The browser stores that question and context in the same conversation. Its next spoken place reply sends `lookup_context` with the new command's transcript, ID, time and timezone, without contacts or saved-item context. Go passes the reply to `withLookupPlace` directly, which preserves the original lookup and cannot interpret it as a write action. For an ambiguous city, the context also retains the city so a region such as `Illinois` completes `Springfield, Illinois`. A country with multiple time zones requires a city. Weather freshness, news windows and time answers use the server clock.
+
+An answered snapshot has this shape. The example is synthetic:
+
+```json
+{
+  "kind": "weather",
+  "query": "Pune",
+  "status": "answered",
+  "answer": "Pune, Maharashtra, India: partly cloudy, 24.5 °C, as of 8:45 AM on 3 November local time, Asia/Kolkata. Weather by Open-Meteo.",
+  "speech": "Pune, Maharashtra, India: partly cloudy, 24.5 °C, as of 8:45 AM on 3 November local time, Asia/Kolkata. Weather by Open-Meteo.",
+  "sources": [{
+    "title": "Current weather from Open-Meteo",
+    "url": "https://open-meteo.com/",
+    "publisher": "Open-Meteo"
+  }],
+  "looked_up_at": "2026-11-03T03:30:00Z",
+  "timezone": "Asia/Kolkata",
+  "data_time": "2026-11-03T08:45:00+05:30"
+}
+```
+
+Empty results use `status: "empty"`, an honest answer and `sources: []`. Source rows contain `title`, safe HTTP(S) `url`, and `publisher`, with optional exact `excerpt` and `published_at`. Tavily publisher labels use source hostnames. News also includes `window_start`, `window_end` and the visitor's `timezone`; only stories with a timestamp in that window survive. Weather credits Open-Meteo and GeoNames and returns local `data_time`. Time answers use the server clock in the resolved IANA zone.
+
+The frontend command parser calls `parseLookupResult` and rejects mixed lookup/action responses. `commitLookup` stores the entire snapshot and answer on the original turn in one IndexedDB transaction before speaking its `speech`, which is capped at 240 characters. The turn is also the receipt, so persistence retries retain the first saved answer. A failed save retains the transcript and cached command response for retry without another search. Switching conversations during retrieval preserves the original turn and suppresses speech in the background conversation. History reads local snapshots; Play reply uses only the speech path. Quick View renders source text as text and links through `safeLookupLink`, with `rel="noopener noreferrer"` for new tabs. Opening a source does not authorize Morning to fetch it or execute its contents.
+
+Provider errors are `lookupError` values with a fixed `Code`, `Message`, `Retryable` and optional `RetryAfter`. These include missing search configuration, denied provider access, quota/rate limits, timeouts, invalid responses and outages. The command adapter maps these to the existing API error envelope with its command ID and forwards `Retry-After` when set. The browser preserves the transcript and applies a lookup-only cooldown to lookup retry buttons, leaving the mic available for other commands. Search and weather/time have independent provider limiters. Reminder, draft and speech paths do not require Tavily.
+
+See the [public setup instructions](../README.md#read-only-lookup-setup) for the optional server-only Tavily key and Azure VM file. The MCP client supports JSON and SSE responses with bounded bodies and blocks redirects. It ignores server instructions and requests. Only protocol initialization and the search tool are sent. No MCP SDK or other Go dependency is needed.
+
+Fixture definitions cover the provider transport, command integration, grounded hotel/Go results, location continuation, today filtering, weather units and data time, ambiguity, Tokyo time, quota/outage redaction, public rate limits, unsafe links, malformed output and attempted model tool calls. Browser fixtures cover snapshot validation, persistence, switching conversations, failed saves and speech-only replay. They have not been executed. The manual **Read-only lookup fixtures** workflow can run them at an approved commit without live keys. It has no push, PR, schedule or deployment trigger. Browser interaction, source quality and live provider behavior require separate verification.

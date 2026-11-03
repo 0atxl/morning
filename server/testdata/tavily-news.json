@@ -1,0 +1,28 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "structuredContent": {
+      "results": [
+        {
+          "title": "India launches a technology research centre",
+          "url": "https://science-daily.example/india-centre",
+          "content": "India launches a technology research centre.",
+          "published_date": "Tue, 03 Nov 2026 02:00:00 GMT"
+        },
+        {
+          "title": "Older technology announcement in India",
+          "url": "https://old-news.example/india",
+          "content": "An older Indian technology announcement.",
+          "published_date": "2026-11-02T10:00:00Z"
+        },
+        {
+          "title": "India technology story with no date",
+          "url": "https://undated.example/india",
+          "content": "A technology story in India."
+        }
+      ]
+    },
+    "content": []
+  }
+}
