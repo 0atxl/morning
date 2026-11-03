@@ -181,12 +181,7 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if request.LookupContext != nil {
-		query, err := withLookupPlace(*request.LookupContext, request.Transcript)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, request.CommandID, "invalid_request", "Say a city or landmark to finish this search.", false)
-			return
-		}
-		a.answerLookup(w, r, request, query)
+		a.answerLookup(w, r, request, request.LookupContext.Query)
 		return
 	}
 	model, err := a.providers.interpret(r.Context(), request, now, location)
