@@ -6,7 +6,7 @@ Morning is a browser-based voice assistant for saving reminders and editable ema
 
 > Draft Priya an email asking for the slides, and remind me in ten minutes to follow up.
 
-Click **Talk to Morning**, say the request, then click **Stop listening**. Priya Shah is a sample contact. The draft opens for review, and the reminder appears beneath the transcript.
+Click **Talk to Morning**, say the request, then click **Stop listening**. Priya Shah is a sample contact. Both saved results appear beneath the transcript. Click a row to open Quick View.
 
 ## Run locally
 
@@ -20,11 +20,11 @@ Keep provider keys in the server environment. The clonable product includes its 
 
 ## What is connected
 
-The microphone streams to Deepgram for live captions using a temporary token from Go. Stop sends the final transcript and relevant contacts to Go, which uses Groq to interpret the command. The browser saves validated reminders and drafts together in IndexedDB, then speaks the saved result using browser speech synthesis.
+The microphone streams to Deepgram for live captions using a temporary token from Go. Stop sends the final transcript and relevant contacts to Go, which uses Groq to interpret the command. The browser saves validated reminders and drafts together in IndexedDB, then requests an ElevenLabs spoken confirmation. Browser speech synthesis provides a fallback, and **Play reply** retries blocked playback without running the command again.
 
-Saved records, contacts and manual edits stay in this browser profile. Quick View supports editing, copying and plain-text download. Drafts remain unsent. A due reminder shows an alert and plays a short chime while the dashboard is open and browser audio is enabled. The owner can also [configure Gmail reminders](deploy/README.md#owner-reminder-email). Once the server accepts the schedule, it can send the email even after the browser closes.
+Saved records, contacts and manual edits stay in this browser profile. Quick View supports editing, copying and plain-text download. **Send via Gmail** opens a compose window populated with the saved draft; you review it and press Send in Gmail. Due alerts stay visible until dismissed. A focused, visible dashboard can chime when browser audio is enabled, and **Play chime** is available manually. The owner can also [configure automatic Gmail reminders](deploy/README.md#owner-reminder-email). Wait until all email changes are scheduled before closing the tab, including after editing a due time. Accepted schedules survive closing the browser and deploying another release. Unpaired guests cannot schedule automatic mail to the owner's inbox.
 
-The backend also implements reminder corrections, calendar-event responses, meeting minutes and optional ElevenLabs MP3 speech. Their browser integrations are pending, including calendar `.ics` download. PAD and PEN in Design preview are sample states. Search and account sync are deferred. The landing page's presentation link currently opens a placeholder page.
+The backend also implements reminder corrections, calendar-event responses and meeting minutes. Their browser integrations are pending, including calendar `.ics` download. Search, packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
 
 See the [web guide](web/README.md) for recorder controls, storage and retry behavior, the [API guide](server/README.md) for endpoint contracts, and the [deployment guide](deploy/README.md) for Azure setup and rollback.
 

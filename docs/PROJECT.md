@@ -13,12 +13,12 @@ I'm Atul Kumar, the solo builder. I chose the guest workflow, designed the voice
 1. Choose **Try Morning** on the landing page. It opens the guest workspace at `/app`. You can use your microphone without an account or personal API keys. Priya Shah is already in **Contacts**, labeled as a sample contact with the address `priya.shah@example.com`.
 2. Click the orb or its **Talk to Morning** label. Once the control reads **Stop listening**, say the slides request above. Live captions appear below the orb. Pause after "slides" if you like. The interim words may change as you speak.
 3. Click **Stop listening** after "follow up." For push-to-talk on a focused dashboard, hold the physical **Right Ctrl** key instead and release it when you finish. Releasing during mic permission or connection setup cancels that hold.
-4. After the save, the draft opens in **Quick View**. The browser says "Draft saved" and reads the reminder title and due time if speech is available. Close Quick View to see both rows beneath the transcript. Open the reminder row to see when the follow-up is due. If playback fails, **Retry speech** repeats the confirmation without submitting the command again.
-5. Open the draft, choose **Edit**, change the subject or message, then select **Save changes**. Refresh the guest dashboard and open the draft again. In the same browser profile, the saved wording and the separate reminder load from IndexedDB. You can copy or download the draft as plain text. Sending it is up to you. The reminder stores the due time but has no alert.
+4. After the save, both result rows appear below the transcript. Morning attempts "Draft saved" and the reminder's due time if speech is available. Click a row to open **Quick View**. If playback fails, **Play reply** repeats the confirmation without submitting the command again.
+5. Open the draft, choose **Edit**, change the subject or message, then select **Save changes**. Refresh the guest dashboard and open the draft again. In the same browser profile, the saved wording and the separate reminder load from IndexedDB. **Send via Gmail** opens a populated compose window; review it and press Send yourself in Gmail. Copy and plain-text download are also available. Due reminders show an alert until dismissed; automatic chimes require a focused, visible dashboard with browser sound enabled.
 
 ## Follow one command through the code
 
-The React dashboard captures audio and stores the results. The Go API gets a temporary transcription token and checks the actions Groq proposes. This trace follows app commit `7ac288f`, the revision in the [Azure deployment run](https://github.com/0atxl/morning/actions/runs/41641704878).
+The React dashboard captures audio and stores the results. The Go API gets a temporary transcription token and checks the actions Groq proposes. This trace describes the source in this repository. Read the site's [deployment metadata](https://morning.atuls.me/deployment.json) for the active release and its Actions record; source changes are not deployed until release activation succeeds.
 
 ```mermaid
 sequenceDiagram
@@ -58,11 +58,13 @@ Two failures need checks beyond the JSON schema.
 
 ### Save once and speak the result
 
-The browser checks the echoed ID and action list, then resolves the draft's recipient against the contacts it originally supplied. `commitCommand` writes the draft, reminder and a receipt keyed by command ID in one IndexedDB transaction. Only the transaction's completion triggers the result rows and browser speech synthesis. The spoken time comes from the saved reminder. [Response parser](../web/src/lib/command-api.ts) · [Storage transaction](../web/src/lib/reminder-store.ts) · [Confirmation text and playback](../web/src/hooks/use-reminder-flow.ts)
+The browser checks the echoed ID and action list, then resolves the draft's recipient against the contacts it originally supplied. `commitCommand` writes the draft, reminder and a receipt keyed by command ID in one IndexedDB transaction. Only the transaction's completion triggers the result rows and spoken confirmation. The spoken time comes from the saved reminder. [Response parser](../web/src/lib/command-api.ts) · [Storage transaction](../web/src/lib/reminder-store.ts) · [Confirmation text and playback](../web/src/hooks/use-reminder-flow.ts)
 
 A retry after a dropped response could otherwise create a second reminder. The dashboard reuses the request ID for a network retry. If interpretation succeeded but storage failed, it retries the cached actions locally. An existing receipt returns the saved records, including later draft edits, without a second success announcement. Recording the sentence again starts a new command. [Retry handling](../web/src/hooks/use-reminder-flow.ts) · [Storage fixture cases](../web/tests/workspace-storage.test.ts)
 
-IndexedDB holds the guest address book, reminders, drafts, receipts and the transcript attached to each saved result. Manual edits stay on this site in this browser profile. Clearing site data removes those records. During capture, audio retained for a retry stays in memory. For spoken confirmation the dashboard passes text to the browser's speech engine, whose voice can depend on the device. [Quick View editor](../web/src/components/result-quick-view.tsx) · [Browser store](../web/src/lib/reminder-store.ts)
+IndexedDB holds the guest address book, reminders, drafts, receipts and the transcript attached to each saved result. Manual edits stay on this site in this browser profile. Clearing site data removes those records. During capture, audio retained for a retry stays in memory. For spoken confirmation the dashboard sends short confirmation text to `/api/speech` for an ElevenLabs MP3, with browser speech as fallback. A blocked reply leaves saved records usable and offers **Play reply**. The configured ElevenLabs voice may require a paid plan; neither server audio nor browser audio is guaranteed. [Quick View editor](../web/src/components/result-quick-view.tsx) · [Browser store](../web/src/lib/reminder-store.ts)
+
+Due reminders remain pending in browser storage until dismissed. Only a visible, focused tab with an enabled AudioContext claims the automatic chime. **Play chime** remains available. A paired owner browser also queues each new or edited reminder for automatic Gmail delivery to one server-configured inbox. The UI checks that no newer revision remains pending before announcing that all email changes are scheduled. Until then, keep Morning open; a previously accepted due time remains active on the server until the edit is accepted. The server queue lives outside releases and survives restarts. SMTP failures retry after five minutes; a failure after SMTP acceptance can still cause duplicate email. Unpaired guests cannot schedule that mail. [Alert polling](../web/src/components/reminder-alerts.tsx) · [Persistent mail queue](../server/reminder_mail.go)
 
 ## Feature status
 
@@ -70,14 +72,14 @@ The table describes what the guest UI calls in the shipped source. The verificat
 
 | Capability | Where it works | Behavior and limits |
 | --- | --- | --- |
-| Reminders | Guest dashboard | Create a reminder and edit its title or due time in Quick View. Due reminders show an in-app alert and chime while the dashboard is open. Owner email requires the Gmail setup in the deployment guide. |
-| Email drafts | Guest dashboard | Review, edit, copy or download an unsent draft. Morning has no mail delivery integration. |
+| Reminders | Guest dashboard | Create a reminder and edit its title or due time in Quick View. Alerts stay pending until dismissed. Chimes require a focused, visible tab with audio enabled. Automatic owner email requires the Gmail setup in the deployment guide and server acceptance of the latest schedule. |
+| Email drafts | Guest dashboard | Review, edit, copy or download an unsent draft. Send via Gmail opens a populated compose window. The user presses Send in Gmail; this is separate from automatic owner reminder mail. |
 | Contact clarification | Guest dashboard | Choose among matching contacts before saving. A missing contact or missing reminder time requires a complete revised recording. |
-| Spoken confirmation | Guest dashboard | Hear the browser read back a new save and retry playback separately. |
+| Spoken confirmation | Guest dashboard | Attempt an ElevenLabs MP3 after a new save, fall back to browser speech, and retry playback separately with Play reply. |
 | Spoken reminder corrections | Go API only | The API accepts an existing reminder context and can return `reschedule_reminder`. The dashboard edits reminders by hand and supplies no such context. [Correction handler](../server/corrections.go) |
 | Calendar export | Go API event data only | Go can return `create_calendar_event` with start, end and timezone. The dashboard produces no `.ics` file and books no event. [Event validation](../server/validation.go) |
 | Meeting minutes | Go API only | `POST /api/minutes` accepts a completed transcript and returns a summary, decisions, action items and open questions. The dashboard has no meeting recorder, minutes editor or minutes download. [Minutes handler](../server/minutes.go) |
-| ElevenLabs playback | Go API only | A configured `POST /api/speech` can return Flash v2.5 MP3 audio. The guest dashboard uses browser speech. [Speech handler](../server/speech.go) |
+| ElevenLabs playback | Guest dashboard and Go API | A configured `POST /api/speech` can return Flash v2.5 MP3 audio. Voice access depends on the provider plan. The guest dashboard falls back to browser speech. [Speech handler](../server/speech.go) |
 | Design preview | Sample UI | PAD and PEN illustrate minutes and corrections in Activity. Preview controls use sample data. Edits reset on refresh. [Activity stages](../web/src/lib/execution.ts) · [Preview state](../web/src/fixtures/use-design-preview.ts) |
 | Search | Unavailable | Neither the guest dashboard nor the API implements search. |
 
@@ -135,13 +137,14 @@ To identify the deployed app, read `commit` in the site's deployment metadata an
 
 ## Verification and limitations
 
-The public Actions history on 3 November 2026 records three runs. Compilation, service activation and fixture tests each establish something different.
+These historical Actions records cover specific revisions. Compilation, service activation and fixture tests each establish something different. They do not verify later changes.
 
 | Existing run | Commit covered | Recorded outcome |
 | --- | --- | --- |
 | [Backend fixtures · 41622302698](https://github.com/0atxl/morning/actions/runs/41622302698) | `0b0f4038d2c9c39554c8498f4b1655cc106d31a8` | The runner checked out this revision for `go test -count=1 -v ./...`. All 12 top-level tests and 55 subtests passed with zero skips. They covered the reminder contract, time and input validation, token grants, rate limits and provider error handling using fixtures. The workflow dispatch itself was at `3dcb632`. |
 | [First build workflow · 41637149423](https://github.com/0atxl/morning/actions/runs/41637149423) | `9eb9cd0b28b38e8a59dfa0b944769991e7364a0d` | The source check found no committed frontend. The workflow finished successfully with compilation and deployment skipped. |
 | [Build and Azure deployment · 41641704878](https://github.com/0atxl/morning/actions/runs/41641704878) | `7ac288f5466248fe4905bf6e2d2cdeef8e105c9c` | Go compilation, TypeScript checking, Vite build and packaging succeeded. The Azure receiver logged activation of this SHA. The workflow ran no fixtures, browser checks or live-provider calls. |
+| [Later build and deployment · 41653257686](https://github.com/0atxl/morning/actions/runs/41653257686) | `92c714ea9629819751aab16afc3b2b83c95045b6` | Compilation and production activation succeeded. This run did not execute tests or establish microphone, audible playback or inbox delivery behavior. |
 
 The fixture run predates email drafts and the guest dashboard. The repository contains later cases for compound commands, browser storage and the additional API endpoints, but these runs give no result for those cases. [Manual fixture workflow](../.github/workflows/backend-tests.yml) · [Backend cases](../server/) · [Frontend cases](../web/tests/)
 

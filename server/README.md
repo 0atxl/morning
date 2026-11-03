@@ -72,7 +72,7 @@ The URL assumes containerized audio such as MediaRecorder WebM/Opus. A browser s
 
 Token issuance allows 5 requests per client IP and 60 total requests per server process per UTC minute. Commands allow 10 per IP and 120 total per minute. Attempts count even if a provider fails. `429` responses include a `Retry-After` header in seconds. Limits reset at minute boundaries and process restart. They are not shared between server instances.
 
-The limiter trusts only the TCP peer IP. It ignores `X-Forwarded-For` and other guest-supplied headers. Behind a reverse proxy, requests share that proxy's IP allowance. Configure limits at the trusted ingress before a public deployment; do not enable arbitrary forwarded-IP trust.
+For a loopback TCP peer, the limiter uses a valid `CF-Connecting-IP` supplied by Cloudflare Tunnel through nginx. The production origin must remain loopback-only. Direct non-loopback requests use their peer IP, and `X-Forwarded-For` is always ignored. This gives public visitors separate allowances while preserving the global cap. Visitors sharing one public IP still share that IP's allowance. A different ingress must sanitize its client identity before using this setup.
 
 ## Interpret a command
 
