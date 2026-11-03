@@ -153,3 +153,16 @@ func TestSpeechRejectionKeepsOnlyKnownCodes(t *testing.T) {
 		resp.Body.Close()
 	}
 }
+
+func TestSpeechPlanRequired(t *testing.T) {
+	t.Setenv("ELEVENLABS_API_KEY", "fixture-speech-key")
+	t.Setenv("ELEVENLABS_VOICE_ID", "fixture-voice")
+	handler := fixtureAPI(t, func(*http.Request) (*http.Response, error) {
+		return providerResponse(402, `{"detail":{"code":"paid_plan_required","message":"private provider detail"}}`), nil
+	})
+	w := requestAPI(handler, "/api/speech", speechExample)
+	expectSpeechError(t, w, 503, "speech_plan_required", false)
+	if w.Header().Get("X-Morning-Speech-Provider-Status") != "402" || strings.Contains(w.Body.String(), "private provider detail") {
+		t.Error("expected only the safe plan error and upstream status")
+	}
+}
