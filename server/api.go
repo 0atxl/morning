@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"mime"
 	"net/http"
 	"strconv"
@@ -13,13 +14,24 @@ import (
 const websocketURL = "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-US&interim_results=true&smart_format=true"
 
 type commandRequest struct {
-	CommandID         string           `json:"command_id"`
-	Transcript        string           `json:"transcript"`
-	Now               string           `json:"now"`
-	Timezone          string           `json:"timezone"`
-	Contacts          []contact        `json:"contacts,omitempty"`
-	SelectedContactID *string          `json:"selected_contact_id,omitempty"`
-	ReminderContext   *reminderContext `json:"reminder_context,omitempty"`
+	CommandID          string           `json:"command_id"`
+	Transcript         string           `json:"transcript"`
+	Now                string           `json:"now"`
+	Timezone           string           `json:"timezone"`
+	Contacts           []contact        `json:"contacts,omitempty"`
+	SelectedContactID  *string          `json:"selected_contact_id,omitempty"`
+	ReminderContext    *reminderContext `json:"reminder_context,omitempty"`
+	SelectedReminderID *string          `json:"selected_reminder_id,omitempty"`
+	DraftContext       *draftContext    `json:"draft_context,omitempty"`
+	SelectedDraftID    *string          `json:"selected_draft_id,omitempty"`
+}
+
+type draftContext struct {
+	ID        string `json:"id"`
+	Subject   string `json:"subject"`
+	Body      string `json:"body"`
+	Recipient string `json:"recipient"`
+	To        string `json:"to"`
 }
 
 type reminderContext struct {
@@ -29,7 +41,9 @@ type reminderContext struct {
 
 type action struct {
 	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
 	ReminderID string `json:"reminder_id,omitempty"`
+	DraftID    string `json:"draft_id,omitempty"`
 	Title      string `json:"title,omitempty"`
 	DueAt      string `json:"due_at,omitempty"`
 	Start      string `json:"start,omitempty"`
@@ -52,6 +66,7 @@ type interpretation struct {
 type commandResponse struct {
 	CommandID string `json:"command_id"`
 	interpretation
+	Reply string `json:"reply,omitempty"`
 }
 
 type tokenResponse struct {
@@ -87,8 +102,8 @@ func newAPIWithMailbox(p *providers, clock func() time.Time, mailbox *reminderMa
 	a := &api{
 		providers: p,
 		clock:     clock,
-		tokens:    newRateLimiter(5, 60),
-		commands:  newRateLimiter(10, 120),
+		tokens:    newRateLimiter(30, 300),
+		commands:  newRateLimiter(60, 600),
 		speech:    newSpeechService(p.client.Transport),
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -143,7 +158,7 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request commandRequest
-	if !readJSON(w, r, &request, 16<<10) {
+	if !readJSON(w, r, &request, 64<<10) {
 		return
 	}
 	now, location, err := validateRequest(request)
@@ -179,8 +194,24 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 		return
 	}
+	if len(result.Actions) == 1 && result.Actions[0].Type == "update_draft" {
+		if request.DraftContext == nil {
+			question := "Which draft should I update?"
+			result = interpretation{Actions: []action{}, Clarification: &question}
+		} else {
+			result.Actions[0].DraftID = request.DraftContext.ID
+		}
+	}
+	if len(result.Actions) > 0 && ((request.SelectedReminderID != nil && result.Actions[0].Type != "reschedule_reminder") || (request.SelectedDraftID != nil && result.Actions[0].Type != "update_draft")) {
+		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
+		return
+	}
 	if err := validateCommandCompleteness(result, request.Transcript); err != nil {
 		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
+		return
+	}
+	if len(result.Actions) == 1 && result.Actions[0].Type == "reply" {
+		writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Reply: result.Actions[0].Text})
 		return
 	}
 	writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: result})
@@ -229,6 +260,8 @@ func writeError(w http.ResponseWriter, status int, id, code, message string, ret
 }
 
 func writeProviderError(w http.ResponseWriter, id, stage string, err error) {
+	// Provider errors contain fixed categories, never response bodies or credentials.
+	log.Printf("%s request failed: %v", stage, err)
 	code, message := stage+"_provider_unavailable", "Morning couldn't interpret your command. Please try again."
 	if stage == "voice" {
 		message = "Morning couldn't start live captions. Please try again."
@@ -238,7 +271,12 @@ func writeProviderError(w http.ResponseWriter, id, stage string, err error) {
 		message = "Morning couldn't prepare the meeting minutes. Please try again."
 	}
 	status := http.StatusBadGateway
-	if errors.Is(err, errInvalidProviderOutput) {
+	if errors.Is(err, errProviderRateLimited) {
+		status = http.StatusTooManyRequests
+		code = stage + "_provider_rate_limited"
+		message = "Morning's provider reached its request limit. Please wait and retry."
+		w.Header().Set("Retry-After", "60")
+	} else if errors.Is(err, errInvalidProviderOutput) {
 		code = stage + "_provider_invalid_response"
 		message = "Morning received an invalid response. Please try again."
 	} else if errors.Is(err, errProviderTimeout) {

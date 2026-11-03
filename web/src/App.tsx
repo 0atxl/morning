@@ -212,6 +212,8 @@ export function App() {
               onCancel={live.cancel}
               onRetrySpeech={live.retrySpeech}
               onChooseContact={(id) => void live.chooseContact(id)}
+              onChooseReminder={(id) => void live.chooseReminder(id)}
+              onChooseDraft={(id) => void live.chooseDraft(id)}
               onOpenContacts={() => setContactsOpen(true)}
             />
 
@@ -225,6 +227,12 @@ export function App() {
                   <div className="conversation-turn" key={turn.id}>
                     {turn.id !== view.turnId && (
                       <p className="past-transcript">{turn.transcript}</p>
+                    )}
+                    {turn.id !== view.turnId && turn.reply && (
+                      <p className="past-reply">
+                        <span className="sr-only">Morning: </span>
+                        {turn.reply}
+                      </p>
                     )}
                     {results.length > 0 && (
                       <ul className="result-list">

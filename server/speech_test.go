@@ -92,7 +92,7 @@ func TestSpeechOptional(t *testing.T) {
 				}
 				return providerResponse(200, fixture(t, "groq-reminder.json")), nil
 			})
-			for range 10 {
+			for range 60 {
 				expectSpeechError(t, requestAPI(handler, "/api/speech", speechExample), 503, "speech_not_configured", false)
 			}
 			w := requestAPI(handler, "/api/speech", speechExample)

@@ -102,11 +102,192 @@ test("acknowledging an older mail request cannot accept a newer edit", async () 
     const accepted = await pollReminders(0);
     assert.equal(accepted.hasMail, true);
     assert.deepEqual(accepted.pending, []);
+    if (saved.kind !== "reminder") throw new Error("missing fixture reminder");
+    const correctedDue = new Date(
+      Date.parse(saved.dueAt) + 120_000,
+    ).toISOString();
+    await commitCommand(
+      {
+        ...request,
+        command_id: "owner-correction",
+        reminder_context: { id: saved.id, due_at: saved.dueAt },
+      },
+      [
+        {
+          type: "reschedule_reminder",
+          reminder_id: saved.id,
+          due_at: correctedDue,
+        },
+      ],
+    );
+    const mail = (await pollReminders(0)).pending;
+    assert.equal(mail.length, 1);
+    assert.equal(mail[0].id, saved.id);
+    assert.equal(mail[0].dueAt, correctedDue);
+    assert.ok(mail[0].revision > edited.revision);
   } finally {
     if (originalWindow)
       Object.defineProperty(globalThis, "window", originalWindow);
     else Reflect.deleteProperty(globalThis, "window");
   }
+});
+
+test("a spoken correction updates the original conversation once and preserves an edited draft", async () => {
+  const session = (await loadWorkspace()).selectedSession;
+  const { records } = await commitCommand(request, [reminder, draft], session);
+  const original = records.find(
+    (record): record is StoredReminder => record.kind === "reminder",
+  )!;
+  const email = records.find(
+    (record): record is StoredDraft => record.kind === "draft",
+  )!;
+  await updateResult({ ...email, body: "My reviewed draft" });
+  await selectWorkspaceSession();
+  const correction = {
+    ...request,
+    command_id: "correction",
+    transcript: "Change the existing task to two minutes.",
+    reminder_context: { id: original.id, due_at: original.dueAt },
+  };
+  const action = {
+    type: "reschedule_reminder",
+    reminder_id: original.id,
+    due_at: "2026-11-03T09:02:00+05:30",
+  } as const;
+  const first = await commitCommand(correction, [action], session);
+  assert.equal(first.created, true);
+  assert.equal(first.records[0].id, original.id);
+  assert.equal(first.records[0].commandId, original.commandId);
+  assert.equal(first.records[0].sessionId, session);
+  const updated = first.records[0] as StoredReminder;
+  await updateResult({ ...updated, title: "Edited after correction" });
+  const replay = await commitCommand(correction, [action], session);
+  assert.equal(replay.created, false);
+  assert.equal(replay.records[0].title, "Edited after correction");
+  const loaded = await loadWorkspace();
+  assert.equal(loaded.records.length, 2);
+  assert.equal(
+    loaded.records.find((record) => record.kind === "draft")?.kind,
+    "draft",
+  );
+  assert.equal(
+    (loaded.records.find((record) => record.kind === "draft") as StoredDraft)
+      .body,
+    "My reviewed draft",
+  );
+  assert.equal((await receipts()).length, 2);
+});
+
+test("stale or cross-conversation corrections abort without a receipt or changed due time", async () => {
+  const session = (await loadWorkspace()).selectedSession;
+  const {
+    records: [record],
+  } = await commitCommand(request, [reminder], session);
+  const original = record as StoredReminder;
+  const correction = {
+    ...request,
+    command_id: "rejected-correction",
+    reminder_context: { id: original.id, due_at: original.dueAt },
+  };
+  const action = {
+    type: "reschedule_reminder",
+    reminder_id: original.id,
+    due_at: "2026-11-03T09:02:00+05:30",
+  } as const;
+  await assert.rejects(
+    commitCommand(correction, [action], "another-session"),
+    /outside this conversation/,
+  );
+  await updateResult({ ...original, dueAt: "2026-11-06T11:00:00+05:30" });
+  await assert.rejects(commitCommand(correction, [action], session), /changed/);
+  assert.equal((await receipts()).length, 1);
+  assert.equal(
+    ((await loadWorkspace()).records[0] as StoredReminder).dueAt,
+    "2026-11-06T11:00:00+05:30",
+  );
+});
+
+test("a conversational reply persists in its own turn without creating saved results", async () => {
+  const sessionId = (await loadWorkspace()).selectedSession;
+  const turn = {
+    id: "greeting",
+    sessionId,
+    createdAt: request.now,
+    transcript: "Hello, what can you do?",
+    reply: "I can help with reminders and editable email drafts.",
+  };
+  await storeTurn(turn);
+  await storeTurn(turn);
+  const loaded = await loadWorkspace();
+  assert.deepEqual(loaded.turns, [turn]);
+  assert.deepEqual(loaded.records, []);
+  assert.deepEqual(await receipts(), []);
+});
+
+test("a voice draft edit updates once, preserves the recipient and reminder, and rejects stale snapshots", async () => {
+  const session = (await loadWorkspace()).selectedSession;
+  const { records } = await commitCommand(request, [draft, reminder], session);
+  const email = records.find(
+    (record): record is StoredDraft => record.kind === "draft",
+  )!;
+  const unchangedReminder = records.find(
+    (record) => record.kind === "reminder",
+  );
+  const edit = {
+    ...request,
+    command_id: "draft-edit",
+    transcript: "Make that email more detailed.",
+    draft_context: {
+      id: email.id,
+      subject: email.subject,
+      body: email.body,
+      recipient: email.recipient,
+      to: email.to,
+    },
+  };
+  const action = {
+    type: "update_draft",
+    draft_id: email.id,
+    subject: "A fuller subject",
+    body: "The complete, revised message.",
+  } as const;
+  const first = await commitCommand(edit, [action], session);
+  assert.equal(first.created, true);
+  assert.equal(first.records[0].id, email.id);
+  const updated = first.records[0] as StoredDraft;
+  assert.equal(updated.to, email.to);
+  assert.equal(updated.commandId, email.commandId);
+  await updateResult({ ...updated, body: "My later manual edit" });
+  const replay = await commitCommand(edit, [action], session);
+  assert.equal(replay.created, false);
+  assert.equal((replay.records[0] as StoredDraft).body, "My later manual edit");
+  await assert.rejects(
+    commitCommand({ ...edit, command_id: "stale-edit" }, [action], session),
+    /draft changed/,
+  );
+  await assert.rejects(
+    commitCommand(
+      {
+        ...edit,
+        command_id: "wrong-session",
+        draft_context: {
+          ...edit.draft_context,
+          subject: updated.subject,
+          body: "My later manual edit",
+        },
+      },
+      [action],
+      "another-session",
+    ),
+    /outside this conversation/,
+  );
+  const loaded = await loadWorkspace();
+  assert.equal(loaded.records.length, 2);
+  assert.deepEqual(
+    loaded.records.find((record) => record.kind === "reminder"),
+    unchangedReminder,
+  );
+  assert.equal((await receipts()).length, 2);
 });
 
 function legacyDatabase(record: StoredReminder, receipt: boolean) {

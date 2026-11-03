@@ -2,6 +2,78 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { SpokenReply } from "../src/lib/spoken-reply.ts";
 
+test("a manual browser reply supersedes an automatic MP3 request still in flight", async (t) => {
+  let resolveAudio!: (response: Response) => void;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    () =>
+      new Promise<Response>((resolve) => {
+        resolveAudio = resolve;
+      }),
+  );
+  let utterance: { onstart?: () => void; onend?: () => void };
+  let audioInstances = 0;
+  class UtteranceStub {
+    lang = "";
+    onstart?: () => void;
+    onend?: () => void;
+    onerror?: () => void;
+  }
+  class AudioStub {
+    constructor() {
+      audioInstances++;
+    }
+  }
+  const originals = ["window", "SpeechSynthesisUtterance", "Audio"].map(
+    (key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const,
+  );
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      setTimeout,
+      clearTimeout,
+      speechSynthesis: {
+        speak: (value: UtteranceStub) => {
+          utterance = value;
+          value.onstart?.();
+        },
+        cancel: () => {},
+      },
+    },
+  });
+  Object.defineProperty(globalThis, "SpeechSynthesisUtterance", {
+    configurable: true,
+    value: UtteranceStub,
+  });
+  Object.defineProperty(globalThis, "Audio", {
+    configurable: true,
+    value: AudioStub,
+  });
+  const states: string[] = [];
+  const reply = new SpokenReply("Reminder updated.", (state) =>
+    states.push(state),
+  );
+  t.after(() => {
+    reply.stop();
+    for (const [key, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  });
+  const automatic = reply.start();
+  reply.play();
+  resolveAudio(
+    new Response(new Blob(["fixture"]), {
+      headers: { "Content-Type": "audio/mpeg" },
+    }),
+  );
+  await automatic;
+  assert.deepEqual(states, ["speaking"]);
+  assert.equal(audioInstances, 0);
+  utterance!.onend?.();
+});
+
 // A blocked auto-play must leave a click path that needs no further request.
 test("Play reply reuses the saved MP3 and reports Speaking only on playback", async (t) => {
   const states: string[] = [];

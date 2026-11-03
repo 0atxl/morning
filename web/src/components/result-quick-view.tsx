@@ -35,6 +35,7 @@ import {
   downloadResult,
   formatDue,
   gmailComposeUrl,
+  googleCalendarUrl,
   localInputDate,
   resultText,
   type WorkspaceResult,
@@ -245,10 +246,10 @@ function ResultContent({
     }
   }
 
-  function download() {
+  function download(format: "txt" | "ics" = "txt") {
     setActionError("");
     try {
-      downloadResult(result);
+      downloadResult(result, format);
       setFeedback("Download prepared");
     } catch {
       setActionError("Couldn't prepare the download. Copy the text instead.");
@@ -350,6 +351,10 @@ function ResultContent({
               <time dateTime={result.dueAt}>{formatDue(result, true)}</time>
             </p>
             <p className="field-hint">{result.timezone}</p>
+            <p className="field-hint">
+              Calendar export creates a one-minute event. Later edits in Morning
+              do not update your calendar.
+            </p>
           </div>
         )}
 
@@ -413,7 +418,11 @@ function ResultContent({
                 <Copy />
                 Copy
               </Button>
-              <Button type="button" variant="outline" onClick={download}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => download()}
+              >
                 <Download />
                 Download
               </Button>
@@ -429,7 +438,29 @@ function ResultContent({
                     Send via Gmail
                   </a>
                 </Button>
-              ) : null}
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => download("ics")}
+                  >
+                    <CalendarClock />
+                    Download .ics
+                  </Button>
+                  <Button asChild variant="outline">
+                    <a
+                      href={googleCalendarUrl(result)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label="Add to Google Calendar (opens in a new tab)"
+                    >
+                      <ArrowUpRight aria-hidden="true" />
+                      Add to Google Calendar
+                    </a>
+                  </Button>
+                </>
+              )}
             </>
           )}
         </div>

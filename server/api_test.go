@@ -148,6 +148,12 @@ func TestProviderFailuresAreDisplayableAndRedacted(t *testing.T) {
 		{"groq outage", "/api/commands", fixtureCommand, "command_provider_unavailable", 502, func(*http.Request) (*http.Response, error) {
 			return providerResponse(503, fixture(t, "groq-unavailable.json")), nil
 		}},
+		{"groq rate limit", "/api/commands", fixtureCommand, "command_provider_rate_limited", 429, func(*http.Request) (*http.Response, error) {
+			return providerResponse(429, "private provider body"), nil
+		}},
+		{"deepgram rate limit", "/api/voice/token", `{}`, "voice_provider_rate_limited", 429, func(*http.Request) (*http.Response, error) {
+			return providerResponse(429, "private provider body"), nil
+		}},
 		{"groq timeout", "/api/commands", fixtureCommand, "command_provider_timeout", 504, func(*http.Request) (*http.Response, error) {
 			return nil, context.DeadlineExceeded
 		}},
@@ -227,7 +233,7 @@ func TestTemporaryTokenAndIssuanceLimit(t *testing.T) {
 		}
 		return providerResponse(200, fixture(t, "deepgram-grant.json")), nil
 	})
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 31; i++ {
 		// Changing an untrusted forwarding header must not bypass the IP limit.
 		r := httptest.NewRequest(http.MethodPost, "/api/voice/token", strings.NewReader(`{}`))
 		r.RemoteAddr = fmt.Sprintf("192.0.2.10:%d", 1000+i)
@@ -235,8 +241,8 @@ func TestTemporaryTokenAndIssuanceLimit(t *testing.T) {
 		r.Header.Set("X-Forwarded-For", fmt.Sprintf("198.51.100.%d", i))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, r)
-		if i == 5 {
-			if w.Code != 429 || w.Header().Get("Retry-After") != "60" || calls != 5 {
+		if i == 30 {
+			if w.Code != 429 || w.Header().Get("Retry-After") != "60" || calls != 30 {
 				t.Fatalf("rate limit failed: %d %s, calls=%d", w.Code, w.Body.String(), calls)
 			}
 			continue
@@ -268,7 +274,7 @@ func TestRejectsInvalidRequestsBeforeCallingProviders(t *testing.T) {
 		{"extra field", strings.TrimSuffix(fixtureCommand, "}") + `,"unsupported_context":[]}`, 400},
 		{"null", "null", 400},
 		{"two objects", fixtureCommand + `{}`, 400},
-		{"large body", strings.Repeat(" ", 16<<10) + fixtureCommand, 413},
+		{"large body", strings.Repeat(" ", 64<<10) + fixtureCommand, 413},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := fixtureAPI(t, func(*http.Request) (*http.Response, error) {

@@ -59,7 +59,7 @@ func newSpeechService(transport http.RoundTripper) *speechService {
 	return &speechService{
 		key:     strings.TrimSpace(os.Getenv("ELEVENLABS_API_KEY")),
 		voiceID: strings.TrimSpace(os.Getenv("ELEVENLABS_VOICE_ID")),
-		limiter: newRateLimiter(10, 120),
+		limiter: newRateLimiter(60, 600),
 		client: http.Client{
 			Transport: transport,
 			Timeout:   8 * time.Second,

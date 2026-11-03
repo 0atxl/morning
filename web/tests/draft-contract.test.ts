@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   parseCommandResponse,
   withSelectedContact,
+  withSelectedDraft,
 } from "../src/lib/command-api.ts";
 import { relevantContacts, validateContact } from "../src/lib/contacts.ts";
 import { recordsForCommand } from "../src/lib/reminder-store.ts";
@@ -13,6 +14,62 @@ const response = (actions: unknown[]) => ({
   command_id: request.command_id,
   actions,
   clarification: null,
+});
+
+test("a spoken draft revision is bound to its selected snapshot and cannot change recipients", () => {
+  const original = {
+    id: "draft:original",
+    subject: "Slides",
+    body: "My existing wording",
+    recipient: "Priya",
+    to: "priya@example.com",
+  };
+  const edit = {
+    ...request,
+    command_id: "draft-edit",
+    transcript: "Make that email more detailed.",
+  };
+  const selected = withSelectedDraft(edit, [original], original.id);
+  assert.equal(selected.now, edit.now);
+  assert.equal(selected.command_id, edit.command_id);
+  const update = {
+    type: "update_draft",
+    draft_id: original.id,
+    subject: "Request for the slides",
+    body: "The complete revised email.",
+  };
+  assert.deepEqual(
+    parseCommandResponse(
+      { ...response([update]), command_id: edit.command_id },
+      selected,
+    ),
+    { kind: "actions", actions: [update] },
+  );
+  assert.throws(() =>
+    parseCommandResponse(
+      { ...response([update]), command_id: edit.command_id },
+      edit,
+    ),
+  );
+  assert.throws(() =>
+    parseCommandResponse(
+      {
+        ...response([{ ...update, to: "another@example.com" }]),
+        command_id: edit.command_id,
+      },
+      selected,
+    ),
+  );
+  assert.throws(() =>
+    parseCommandResponse(
+      {
+        ...response([{ ...update, draft_id: "another" }]),
+        command_id: edit.command_id,
+      },
+      selected,
+    ),
+  );
+  assert.throws(() => withSelectedDraft(edit, [], "another"));
 });
 
 test("a draft alone resolves its recipient from the request snapshot", () => {

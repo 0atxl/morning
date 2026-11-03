@@ -721,6 +721,12 @@ a:focus-visible {
   color: var(--muted-foreground);
   overflow-wrap: anywhere;
 }
+.past-reply {
+  max-width: 72ch;
+  margin: 12px 0 20px;
+  color: var(--foreground);
+  line-height: 1.65;
+}
 .workspace-footer {
   display: flex;
   flex-wrap: wrap;

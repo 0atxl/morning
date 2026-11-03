@@ -7,6 +7,16 @@ export type CommandRequest = {
   timezone: string;
   contacts?: Contact[];
   selected_contact_id?: string;
+  reminder_context?: { id: string; due_at: string };
+  selected_reminder_id?: string;
+  draft_context?: {
+    id: string;
+    subject: string;
+    body: string;
+    recipient: string;
+    to: string;
+  };
+  selected_draft_id?: string;
 };
 
 export type ReminderAction = {
@@ -21,9 +31,22 @@ export type DraftAction = {
   subject: string;
   body: string;
 };
-export type CommandAction = ReminderAction | DraftAction;
+export type RescheduleAction = {
+  type: "reschedule_reminder";
+  reminder_id: string;
+  due_at: string;
+};
+export type UpdateDraftAction = {
+  type: "update_draft";
+  draft_id: string;
+  subject: string;
+  body: string;
+};
+export type CommandAction =
+  ReminderAction | DraftAction | RescheduleAction | UpdateDraftAction;
 export type CommandResponse =
   | { kind: "actions"; actions: CommandAction[] }
+  | { kind: "reply"; text: string }
   | { kind: "clarification"; question: string; options: ContactOption[] };
 
 export class RequestError extends Error {
@@ -59,9 +82,15 @@ export async function postJSON(
     const message =
       typeof error?.message === "string"
         ? error.message
-        : "Morning couldn't reach the server. Please retry.";
+        : response.status === 429
+          ? "Morning's request limit was reached. Please wait, then retry."
+          : response.status === 504
+            ? "Morning's server timed out (HTTP 504). Your transcript is still available. Please retry."
+            : `Morning's server returned HTTP ${response.status}. Your transcript is still available. Please retry.`;
     const retryAfter =
-      response.status === 429 ? Number(response.headers.get("Retry-After")) : 0;
+      response.status === 429
+        ? Number(response.headers.get("Retry-After")) || 60
+        : 0;
     throw new RequestError(
       message,
       retryAfter > 0 && Number.isFinite(retryAfter)
@@ -125,6 +154,19 @@ export function parseCommandResponse(
       "Morning returned a mismatched command response. Please retry.",
     );
   }
+  if (
+    value.actions.length === 0 &&
+    value.clarification === null &&
+    value.clarification_options === undefined &&
+    typeof value.reply === "string" &&
+    value.reply.trim() &&
+    [...value.reply].length <= 240
+  )
+    return { kind: "reply", text: value.reply.trim() };
+  if (value.reply !== undefined)
+    throw new RequestError(
+      "Morning returned a mixed reply and action. Nothing was saved. Please retry.",
+    );
   if (
     value.actions.length === 0 &&
     typeof value.clarification === "string" &&
@@ -207,6 +249,57 @@ export function parseCommandResponse(
         title: action.title.trim(),
         due_at: action.due_at,
       });
+    } else if (action.type === "reschedule_reminder") {
+      if (
+        value.actions.length !== 1 ||
+        !request.reminder_context ||
+        action.reminder_id !== request.reminder_context.id ||
+        (request.selected_reminder_id &&
+          action.reminder_id !== request.selected_reminder_id) ||
+        Object.keys(action).some(
+          (key) => !["type", "reminder_id", "due_at"].includes(key),
+        ) ||
+        typeof action.due_at !== "string" ||
+        !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d$/.test(
+          action.due_at,
+        ) ||
+        !Number.isFinite(Date.parse(action.due_at)) ||
+        Date.parse(action.due_at) <= Date.parse(request.now)
+      )
+        throw new RequestError(
+          "Morning returned an invalid reminder update. Nothing was changed. Please retry.",
+        );
+      actions.push({
+        type: "reschedule_reminder",
+        reminder_id: request.reminder_context.id,
+        due_at: action.due_at,
+      });
+    } else if (action.type === "update_draft") {
+      if (
+        value.actions.length !== 1 ||
+        !request.draft_context ||
+        action.draft_id !== request.draft_context.id ||
+        (request.selected_draft_id &&
+          action.draft_id !== request.selected_draft_id) ||
+        Object.keys(action).some(
+          (key) => !["type", "draft_id", "subject", "body"].includes(key),
+        ) ||
+        typeof action.subject !== "string" ||
+        !action.subject.trim() ||
+        [...action.subject].length > 200 ||
+        typeof action.body !== "string" ||
+        !action.body.trim() ||
+        [...action.body].length > 8000
+      )
+        throw new RequestError(
+          "Morning returned an invalid draft update. Nothing was changed. Please retry.",
+        );
+      actions.push({
+        type: "update_draft",
+        draft_id: request.draft_context.id,
+        subject: action.subject,
+        body: action.body,
+      });
     } else if (action.type === "draft_email") {
       const recipient = request.contacts?.find(
         (contact) => contact.id === action.to_contact_id,
@@ -247,6 +340,15 @@ export function parseCommandResponse(
     throw new RequestError(
       "The selected contact's draft is missing. Nothing was saved. Please retry.",
     );
+  if (
+    (request.selected_reminder_id &&
+      !actions.some((action) => action.type === "reschedule_reminder")) ||
+    (request.selected_draft_id &&
+      !actions.some((action) => action.type === "update_draft"))
+  )
+    throw new RequestError(
+      "Morning didn't update the selected item. Nothing was changed. Please retry.",
+    );
   return { kind: "actions", actions };
 }
 
@@ -264,6 +366,41 @@ export function withSelectedContact(
     ...request,
     contacts: request.contacts.map((contact) => ({ ...contact })),
     selected_contact_id: contactId,
+  };
+}
+
+export function withSelectedReminder(
+  request: CommandRequest,
+  options: readonly { id: string; dueAt: string }[],
+  id: string,
+): CommandRequest {
+  const reminder = options.find((option) => option.id === id);
+  if (!reminder) throw new RequestError("Choose one of the offered reminders.");
+  return {
+    ...request,
+    reminder_context: { id: reminder.id, due_at: reminder.dueAt },
+    selected_reminder_id: reminder.id,
+  };
+}
+
+export function withSelectedDraft(
+  request: CommandRequest,
+  options: readonly {
+    id: string;
+    subject: string;
+    body: string;
+    recipient: string;
+    to: string;
+  }[],
+  id: string,
+): CommandRequest {
+  const draft = options.find((option) => option.id === id);
+  if (!draft) throw new RequestError("Choose one of the offered drafts.");
+  const { subject, body, recipient, to } = draft;
+  return {
+    ...request,
+    draft_context: { id, subject, body, recipient, to },
+    selected_draft_id: id,
   };
 }
 

@@ -17,6 +17,7 @@ export type Turn = {
   sessionId: string;
   transcript: string;
   createdAt: string;
+  reply?: string;
 };
 export const earlierActivity = "earlier-activity";
 
@@ -196,6 +197,15 @@ export function recordsForCommand(
   sessionId?: string,
 ): StoredResult[] {
   if (
+    actions.some(
+      (action) =>
+        action.type === "reschedule_reminder" || action.type === "update_draft",
+    )
+  )
+    throw new Error(
+      "A correction must update its existing reminder, not create records.",
+    );
+  if (
     !actions.length ||
     actions.length > 2 ||
     new Set(actions.map((action) => action.type)).size !== actions.length
@@ -219,6 +229,7 @@ export function recordsForCommand(
         dueAt: action.due_at,
         timezone: request.timezone,
       } satisfies StoredReminder;
+    if (action.type !== "draft_email") throw storageError();
     const contact = request.contacts?.find(
       (candidate) => candidate.id === action.to_contact_id,
     );
@@ -258,7 +269,40 @@ export async function commitCommand(
   actions: readonly CommandAction[],
   sessionId?: string,
 ): Promise<CommitResult> {
-  const proposed = recordsForCommand(request, actions, sessionId);
+  const correction =
+    actions.length === 1 && actions[0].type === "reschedule_reminder"
+      ? actions[0]
+      : undefined;
+  const draftUpdate =
+    actions.length === 1 && actions[0].type === "update_draft"
+      ? actions[0]
+      : undefined;
+  if (
+    draftUpdate &&
+    (request.draft_context?.id !== draftUpdate.draft_id ||
+      (request.selected_draft_id &&
+        request.selected_draft_id !== draftUpdate.draft_id) ||
+      !draftUpdate.subject.trim() ||
+      !draftUpdate.body.trim())
+  )
+    throw new Error(
+      "This update has no matching saved draft. Nothing was changed.",
+    );
+  if (
+    correction &&
+    (request.reminder_context?.id !== correction.reminder_id ||
+      (request.selected_reminder_id &&
+        request.selected_reminder_id !== correction.reminder_id) ||
+      !Number.isFinite(Date.parse(correction.due_at)) ||
+      Date.parse(correction.due_at) <= Date.parse(request.now))
+  )
+    throw new Error(
+      "This correction has no matching saved reminder or valid future time. Nothing was changed.",
+    );
+  const proposed =
+    correction || draftUpdate
+      ? []
+      : recordsForCommand(request, actions, sessionId);
   const db = await openStore();
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction;
@@ -274,6 +318,7 @@ export async function commitCommand(
     }
     const commands = tx.objectStore("commands");
     let outcome: CommitResult | undefined;
+    let failure: Error | undefined;
     const receipt = commands.get(request.command_id);
     receipt.onsuccess = () => {
       const existingReceipt = receipt.result as Receipt | undefined;
@@ -290,10 +335,14 @@ export async function commitCommand(
           ].filter((entry): entry is { store: string; id: string } =>
             Boolean(entry),
           )
-        : [
-            { store: "reminders", id: request.command_id },
-            { store: "drafts", id: `draft:${request.command_id}` },
-          ];
+        : draftUpdate
+          ? [{ store: "drafts", id: draftUpdate.draft_id }]
+          : correction
+            ? [{ store: "reminders", id: correction.reminder_id }]
+            : [
+                { store: "reminders", id: request.command_id },
+                { store: "drafts", id: `draft:${request.command_id}` },
+              ];
       if (!references.length) {
         tx.abort();
         return;
@@ -309,7 +358,57 @@ export async function commitCommand(
             return;
           }
           if (--remaining) return;
-          if (existing.length) {
+          if (correction && !existingReceipt) {
+            const original = existing[0];
+            if (
+              !original ||
+              original.kind !== "reminder" ||
+              original.sessionId !== sessionId ||
+              Date.parse(original.dueAt) !==
+                Date.parse(request.reminder_context!.due_at)
+            ) {
+              failure = new Error(
+                "This reminder changed or is outside this conversation. Record the correction again. Nothing was changed.",
+              );
+              tx.abort();
+              return;
+            }
+            const updated: StoredReminder = {
+              ...original,
+              dueAt: correction.due_at,
+              timezone: request.timezone,
+            };
+            queueOwnerMail(tx, updated);
+            tx.objectStore("reminders").put(updated);
+            commands.add(receiptFor(request.command_id, [updated]));
+            // created means this command receipt was committed for the first time.
+            outcome = { records: [updated], created: true };
+          } else if (draftUpdate && !existingReceipt) {
+            const original = existing[0];
+            const snapshot = request.draft_context!;
+            if (
+              !original ||
+              original.kind !== "draft" ||
+              original.sessionId !== sessionId ||
+              original.subject !== snapshot.subject ||
+              original.body !== snapshot.body ||
+              original.to !== snapshot.to
+            ) {
+              failure = new Error(
+                "This draft changed or is outside this conversation. Record the edit again. Nothing was changed.",
+              );
+              tx.abort();
+              return;
+            }
+            const updated: StoredDraft = {
+              ...original,
+              subject: draftUpdate.subject,
+              body: draftUpdate.body,
+            };
+            tx.objectStore("drafts").put(updated);
+            commands.add(receiptFor(request.command_id, [updated]));
+            outcome = { records: [updated], created: true };
+          } else if (existing.length) {
             // Receipts and legacy records are authoritative. Never replay over
             // edits or add new actions to an already completed command.
             outcome = { records: existing, created: false };
@@ -343,7 +442,7 @@ export async function commitCommand(
     };
     tx.onabort = tx.onerror = () => {
       db.close();
-      reject(storageError());
+      reject(failure ?? storageError());
     };
   });
 }

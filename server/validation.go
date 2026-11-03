@@ -67,6 +67,20 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 			return time.Time{}, nil, errors.New("reminder_context requires a saved reminder ID distinct from command_id and its RFC 3339 due_at.")
 		}
 	}
+	if selected := request.SelectedReminderID; selected != nil {
+		if !validCommandID(*selected) || request.ReminderContext == nil || *selected != request.ReminderContext.ID {
+			return time.Time{}, nil, errors.New("selected_reminder_id must match reminder_context.id.")
+		}
+	}
+	if draft := request.DraftContext; draft != nil {
+		id := strings.TrimPrefix(draft.ID, "draft:")
+		if !validCommandID(id) || id == request.CommandID || !validText(draft.Subject, 200) || !validDraftBody(draft.Body) || !validText(draft.Recipient, 254) || !validText(draft.To, 254) {
+			return time.Time{}, nil, errors.New("draft_context requires an existing draft ID, recipient, subject and message.")
+		}
+	}
+	if selected := request.SelectedDraftID; selected != nil && (request.DraftContext == nil || *selected != request.DraftContext.ID) {
+		return time.Time{}, nil, errors.New("selected_draft_id must match draft_context.id.")
+	}
 	return now.In(location), location, nil
 }
 
@@ -118,7 +132,14 @@ func validateInterpretation(result *interpretation, now time.Time, location *tim
 			return errors.New("at most one action of each type is supported")
 		}
 		seen[action.Type] = true
+		if action.Type != "reply" && action.Text != "" {
+			return errors.New("reply text cannot accompany a saved action")
+		}
 		switch action.Type {
+		case "reply":
+			if len(result.Actions) != 1 || !validText(action.Text, maxSpeechChars) || action.Title != "" || action.DueAt != "" || action.ReminderID != "" || action.ToContactID != "" || action.Subject != "" || action.Body != "" || action.Start != "" || action.End != "" || action.StartPhrase != "" || action.EndPhrase != "" || action.Timezone != "" {
+				return errors.New("a conversational reply must stand alone without saved actions")
+			}
 		case "create_reminder", "reschedule_reminder":
 			if action.ToContactID != "" || action.Subject != "" || action.Body != "" {
 				return errors.New("invalid reminder fields")
@@ -159,6 +180,10 @@ func validateInterpretation(result *interpretation, now time.Time, location *tim
 		case "draft_email":
 			if !validCommandID(action.ToContactID) || !validText(action.Subject, 200) || !validDraftBody(action.Body) || action.Title != "" || action.DueAt != "" {
 				return errors.New("invalid draft fields")
+			}
+		case "update_draft":
+			if len(result.Actions) != 1 || !validText(action.Subject, 200) || !validDraftBody(action.Body) || action.ToContactID != "" || action.Title != "" || action.DueAt != "" || action.DraftID != "" || action.ReminderID != "" {
+				return errors.New("a draft update can only replace the existing subject and message")
 			}
 		default:
 			return errors.New("unsupported action")

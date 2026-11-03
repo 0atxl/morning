@@ -134,3 +134,34 @@ func TestInvalidCorrectionContext(t *testing.T) {
 		}
 	}
 }
+
+func TestNaturalTaskCorrectionAndExplicitReminderSelection(t *testing.T) {
+	for _, transcript := range []string{"Change the existing task to two minutes.", "No. Change that reminder to two minutes.", "Maybe make that two minutes."} {
+		var request commandRequest
+		_ = json.Unmarshal([]byte(correctionRequest), &request)
+		request.Transcript = transcript
+		_, location, _ := validateRequest(request)
+		result, err := resolveCorrection(interpretation{Actions: []action{{Type: "reschedule_reminder", DueAt: "2026-11-03T09:04:00+05:30"}}}, request, location)
+		if err != nil || len(result.Actions) != 1 || result.Actions[0].ReminderID != request.ReminderContext.ID {
+			t.Fatalf("correction lost its target: %v %+v", err, result)
+		}
+	}
+	var request commandRequest
+	_ = json.Unmarshal([]byte(correctionRequest), &request)
+	request.Transcript = "Move the other reminder to eleven."
+	selected := request.ReminderContext.ID
+	request.SelectedReminderID = &selected
+	_, location, err := validateRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := resolveCorrection(interpretation{Actions: []action{{Type: "reschedule_reminder", DueAt: "2026-11-06T11:00:00+05:30"}}}, request, location)
+	if err != nil || len(result.Actions) != 1 || result.Actions[0].ReminderID != selected {
+		t.Fatal("explicit reminder selection did not resolve the target")
+	}
+	wrong := "another-reminder"
+	request.SelectedReminderID = &wrong
+	if _, _, err := validateRequest(request); err == nil {
+		t.Fatal("mismatched reminder selection accepted")
+	}
+}

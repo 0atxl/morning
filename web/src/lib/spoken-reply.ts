@@ -1,16 +1,20 @@
 import type { WorkspaceResult } from "./results.ts";
 
-export function confirmationText(results: readonly WorkspaceResult[]) {
+export function confirmationText(
+  results: readonly WorkspaceResult[],
+  operation?: "reschedule_reminder" | "update_draft",
+) {
   const draft = results.some((result) => result.kind === "draft");
   const reminder = results.find((result) => result.kind === "reminder");
-  if (!reminder) return "Draft saved.";
+  if (!reminder)
+    return operation === "update_draft" ? "Draft updated." : "Draft saved.";
   const time = new Intl.DateTimeFormat("en", {
     timeZone: reminder.timezone,
     weekday: "long",
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(reminder.dueAt));
-  return `${draft ? "Draft saved. " : ""}Reminder saved for ${time}.`;
+  return `${draft ? "Draft saved. " : ""}Reminder ${operation === "reschedule_reminder" ? "updated" : "saved"} for ${time}.`;
 }
 
 type PlaybackState = "speaking" | "finished" | "blocked";
@@ -42,6 +46,7 @@ async function speechRequestError(response: Response) {
 // One committed command owns its fetch, audio and browser utterance. Keeping
 // the MP3 after a blocked attempt lets a click call play() during the gesture.
 export class SpokenReply {
+  private attempt = 0;
   private readonly abort = new AbortController();
   private clip: Blob | null = null;
   private release?: () => void;
@@ -56,6 +61,7 @@ export class SpokenReply {
   }
 
   async start(browserError?: string) {
+    const attempt = ++this.attempt;
     try {
       const response = await fetch("/api/speech", {
         method: "POST",
@@ -87,7 +93,7 @@ export class SpokenReply {
     } catch {
       this.audioError = "The speech request didn't finish.";
     }
-    if (this.abort.signal.aborted) return;
+    if (this.abort.signal.aborted || attempt !== this.attempt) return;
     if (this.clip) this.playClip(browserError);
     else if (browserError) this.blocked(browserError);
     else this.browserVoice();
@@ -96,6 +102,7 @@ export class SpokenReply {
   // The click can unlock either a cached clip or the native voice. If there's
   // no clip and that voice fails again, retry only the speech request.
   play() {
+    this.attempt++;
     this.release?.();
     if (this.abort.signal.aborted) return;
     if (this.clip) this.playClip();

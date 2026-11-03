@@ -8,6 +8,8 @@ Morning is a browser-based voice assistant for saving reminders and editable ema
 
 Click **Talk to Morning**, say the request, then click **Stop listening**. Priya Shah is a sample contact. Both saved results appear beneath the transcript. Click a row to open Quick View.
 
+Then try "Change that reminder to two minutes" or "Make that email more detailed." Morning updates the same saved item. With several possible targets in the conversation, choose the one to edit. Greetings and questions such as "What can you do?" receive a Groq-generated reply without creating a reminder or draft.
+
 ## Run locally
 
 You need Go 1.22 or newer, Node.js 22.12 or newer, and server-side Deepgram and Groq keys.
@@ -20,11 +22,13 @@ Keep provider keys in the server environment. The clonable product includes its 
 
 ## What is connected
 
-The microphone streams to Deepgram for live captions using a temporary token from Go. Stop sends the final transcript and relevant contacts to Go, which uses Groq to interpret the command. The browser saves validated reminders and drafts together in IndexedDB, then requests an ElevenLabs spoken confirmation. Browser speech synthesis provides a fallback, and **Play reply** retries blocked playback without running the command again.
+The microphone streams to Deepgram for live captions using a temporary token from Go. Stop sends the final transcript, relevant contacts and focused reminder or draft context to Go. Groq interprets the request, writes or revises the email, or generates a conversational reply. New drafts are prompted to include a developed request and useful detail from the user's words. The browser saves validated results before requesting an ElevenLabs spoken reply. Browser speech provides a fallback. **Play reply** remains available to replay the current reply without rerunning its action.
 
 Saved records, contacts and manual edits stay in this browser profile. Quick View supports editing, copying and plain-text download. **Send via Gmail** opens a compose window populated with the saved draft; you review it and press Send in Gmail. Due alerts stay visible until dismissed. A focused, visible dashboard can chime when browser audio is enabled, and **Play chime** is available manually. The owner can also [configure automatic Gmail reminders](deploy/README.md#owner-reminder-email). Wait until all email changes are scheduled before closing the tab, including after editing a due time. Accepted schedules survive closing the browser and deploying another release. Unpaired guests cannot schedule automatic mail to the owner's inbox.
 
-The backend also implements reminder corrections, calendar-event responses and meeting minutes. Their browser integrations are pending, including calendar `.ics` download. Search, packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
+Reminder Quick View offers **Download .ics** and **Add to Google Calendar**. Both create a one-minute entry at the saved due time. Review and save or import it in your calendar. Calendar copies do not sync with later edits in Morning.
+
+The backend also implements calendar-event responses and meeting minutes. Their browser recording and event-scheduling flows are pending. Search, packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
 
 See the [web guide](web/README.md) for recorder controls, storage and retry behavior, the [API guide](server/README.md) for endpoint contracts, and the [deployment guide](deploy/README.md) for Azure setup and rollback.
 

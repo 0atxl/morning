@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import type { VoiceView } from "@/hooks/use-reminder-flow";
 import { canToggleRecorder } from "@/lib/recorder-shortcut";
 import { UnderOrbDotTranscript } from "@/components/dot-morph";
+import { formatDue } from "@/lib/results";
 
 type Props = {
   view: VoiceView;
@@ -16,6 +17,8 @@ type Props = {
   onCancel: () => void;
   onRetrySpeech: () => void;
   onChooseContact: (id: string) => void;
+  onChooseReminder: (id: string) => void;
+  onChooseDraft: (id: string) => void;
   onOpenContacts: () => void;
 };
 
@@ -29,6 +32,8 @@ export function VoiceCommand({
   onCancel,
   onRetrySpeech,
   onChooseContact,
+  onChooseReminder,
+  onChooseDraft,
   onOpenContacts,
 }: Props) {
   const { phase, captions } = view;
@@ -131,7 +136,7 @@ export function VoiceCommand({
           ? "Choose New session to record."
           : disabled
             ? "Please wait to start another recording."
-            : "Audio goes to Deepgram. Your command and relevant contacts go to Morning's server. Results stay in this browser."}
+            : "Audio goes to Deepgram. Your command, relevant contacts and saved item context go to Morning's server. Results stay in this browser."}
       </p>
       <div
         className={`command-status${status ? " is-visible" : ""}`}
@@ -146,9 +151,9 @@ export function VoiceCommand({
           </span>
         ) : null}
       </div>
-      {view.playbackError ? (
+      {view.playbackError || view.replyAvailable ? (
         <div className="voice-feedback feedback-line">
-          <p role="status">{view.playbackError}</p>
+          {view.playbackError && <p role="status">{view.playbackError}</p>}
           <Button
             type="button"
             size="sm"
@@ -170,7 +175,9 @@ export function VoiceCommand({
         <div className="voice-feedback">
           <div className="feedback-line">
             <p role="status">{view.question}</p>
-            {!view.options.length ? (
+            {!view.options.length &&
+            !view.reminderOptions.length &&
+            !view.draftOptions.length ? (
               <Button variant="outline" onClick={onToggle}>
                 Record again
               </Button>
@@ -193,6 +200,36 @@ export function VoiceCommand({
                 >
                   <span>{option.name}</span>
                   <span>{option.email}</span>
+                </Button>
+              ))}
+            </div>
+          ) : view.reminderOptions.length ? (
+            <div className="contact-choices" aria-label="Choose a reminder">
+              {view.reminderOptions.map((reminder) => (
+                <Button
+                  key={reminder.id}
+                  variant="outline"
+                  className="contact-choice"
+                  disabled={wait > 0}
+                  onClick={() => onChooseReminder(reminder.id)}
+                >
+                  <span>{reminder.title}</span>
+                  <span>{formatDue(reminder, true)}</span>
+                </Button>
+              ))}
+            </div>
+          ) : view.draftOptions.length ? (
+            <div className="contact-choices" aria-label="Choose an email draft">
+              {view.draftOptions.map((draft) => (
+                <Button
+                  key={draft.id}
+                  variant="outline"
+                  className="contact-choice"
+                  disabled={wait > 0}
+                  onClick={() => onChooseDraft(draft.id)}
+                >
+                  <span>{draft.title}</span>
+                  <span>{draft.subject}</span>
                 </Button>
               ))}
             </div>

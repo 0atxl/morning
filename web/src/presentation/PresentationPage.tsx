@@ -369,6 +369,20 @@ export function PresentationPage() {
                 browser's timezone and shows the saved due date and time.
               </p>
             </Row>
+            <Row title="Change the time by voice">
+              <p>
+                "Change that reminder to two minutes." Morning updates the same
+                reminder. If several reminders could be the target, I choose the
+                one to change.
+              </p>
+            </Row>
+            <Row title="Put it on my calendar">
+              <p>
+                Quick View offers Download .ics and Add to Google Calendar. I
+                review and save a one-minute entry at the reminder's due time.
+                Calendar copies do not sync with later changes in Morning.
+              </p>
+            </Row>
             <Row title="Come back to the result">
               <p>
                 Reminders survive refresh and closing the tab in the same
@@ -407,6 +421,15 @@ export function PresentationPage() {
                 emails.
               </p>
             </Row>
+            <Row title="Refine the draft by voice">
+              <p>
+                "Make that email more detailed" or "change its subject." Groq
+                revises the saved subject and message using my existing wording.
+                It updates the same draft and preserves the recipient and
+                reminder. New drafts are prompted to include useful detail from
+                my request without inventing facts.
+              </p>
+            </Row>
             <Row title="Keep control of the record">
               <p>
                 The draft remains available for copying or plain-text download.
@@ -427,6 +450,13 @@ export function PresentationPage() {
                 interpretation, saving and playback events.
               </p>
             </Row>
+            <Row title="Start a conversation">
+              <p>
+                I can say hello or ask what Morning can do. Groq generates the
+                reply in natural language. The reply stays in History and is
+                available for speech playback without creating a task.
+              </p>
+            </Row>
             <Row title="Keep conversations separate">
               <p>
                 History selects a conversation and its results. An in-flight
@@ -437,7 +467,7 @@ export function PresentationPage() {
             <Row title="Recover without redoing the action">
               <p>
                 The app attempts speech only after a new save. If audio is
-                blocked, the saved result stays usable and Play reply retries
+                blocked, the saved result stays usable and Play reply replays
                 playback. Microphone capture, audible sound and inbox delivery
                 still need a check on the demo device.
               </p>
@@ -527,11 +557,11 @@ export function PresentationPage() {
                   export flow are still to come.
                 </p>
               </Row>
-              <Row title="Corrections and calendar files">
+              <Row title="New calendar events">
                 <p>
-                  The API supports reminder corrections and calendar-event data.
-                  I want to connect spoken corrections and calendar-file export
-                  to the dashboard, with review before acting.
+                  The API supports calendar-event data. I want to connect new
+                  event scheduling to the dashboard with an explicit start and
+                  duration. Existing reminders already offer calendar export.
                 </p>
               </Row>
               <Row title="Personal integrations, later">

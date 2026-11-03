@@ -76,11 +76,13 @@ The table describes what the guest UI calls in the shipped source. The verificat
 | Email drafts | Guest dashboard | Review, edit, copy or download an unsent draft. Send via Gmail opens a populated compose window. The user presses Send in Gmail; this is separate from automatic owner reminder mail. |
 | Contact clarification | Guest dashboard | Choose among matching contacts before saving. A missing contact or missing reminder time requires a complete revised recording. |
 | Spoken confirmation | Guest dashboard | Attempt an ElevenLabs MP3 after a new save, fall back to browser speech, and retry playback separately with Play reply. |
-| Spoken reminder corrections | Go API only | The API accepts an existing reminder context and can return `reschedule_reminder`. The dashboard edits reminders by hand and supplies no such context. [Correction handler](../server/corrections.go) |
-| Calendar export | Go API event data only | Go can return `create_calendar_event` with start, end and timezone. The dashboard produces no `.ics` file and books no event. [Event validation](../server/validation.go) |
+| Spoken reminder corrections | Guest dashboard | Change an existing reminder's due time in place. The browser supplies the conversation's sole reminder or offers a choice. Updates check the original snapshot and save a command receipt before speaking. [Correction handler](../server/corrections.go) |
+| Spoken draft revisions | Guest dashboard | Ask for a fuller message, another tone or a changed subject. Groq revises the saved subject and body. The browser updates the same draft and preserves its recipient and related reminder. Stale snapshots abort. |
+| Greetings and help | Guest dashboard | Groq generates replies to greetings and capability questions. The reply stays in the conversation, is available for playback and creates no reminder or draft. |
+| Reminder calendar export | Guest dashboard | Quick View downloads an `.ics` file or opens a prefilled Google Calendar entry for review. Both use a one-minute marker at the saved due time. Later Morning edits do not sync to the calendar copy. |
+| New calendar events | Go API event data only | Go can return `create_calendar_event` with start, end and timezone. Spoken event scheduling is not connected to the dashboard. [Event validation](../server/validation.go) |
 | Meeting minutes | Go API only | `POST /api/minutes` accepts a completed transcript and returns a summary, decisions, action items and open questions. The dashboard has no meeting recorder, minutes editor or minutes download. [Minutes handler](../server/minutes.go) |
 | ElevenLabs playback | Guest dashboard and Go API | A configured `POST /api/speech` can return Flash v2.5 MP3 audio. Voice access depends on the provider plan. The guest dashboard falls back to browser speech. [Speech handler](../server/speech.go) |
-| Design preview | Sample UI | PAD and PEN illustrate minutes and corrections in Activity. Preview controls use sample data. Edits reset on refresh. [Activity stages](../web/src/lib/execution.ts) · [Preview state](../web/src/fixtures/use-design-preview.ts) |
 | Search | Unavailable | Neither the guest dashboard nor the API implements search. |
 
 ## My contribution
@@ -145,6 +147,7 @@ These historical Actions records cover specific revisions. Compilation, service 
 | [First build workflow · 41637149423](https://github.com/0atxl/morning/actions/runs/41637149423) | `9eb9cd0b28b38e8a59dfa0b944769991e7364a0d` | The source check found no committed frontend. The workflow finished successfully with compilation and deployment skipped. |
 | [Build and Azure deployment · 41641704878](https://github.com/0atxl/morning/actions/runs/41641704878) | `7ac288f5466248fe4905bf6e2d2cdeef8e105c9c` | Go compilation, TypeScript checking, Vite build and packaging succeeded. The Azure receiver logged activation of this SHA. The workflow ran no fixtures, browser checks or live-provider calls. |
 | [Later build and deployment · 41653257686](https://github.com/0atxl/morning/actions/runs/41653257686) | `92c714ea9629819751aab16afc3b2b83c95045b6` | Compilation and production activation succeeded. This run did not execute tests or establish microphone, audible playback or inbox delivery behavior. |
+| [Demo fixes and presentation deployment · 41686806532](https://github.com/0atxl/morning/actions/runs/41686806532) | `a178bbacfe586a1b5f3f671d062ff16560f268e3` | Compilation and activation succeeded. The workflow ran no tests or browser/provider checks. It predates the voice-edit, conversational-reply and calendar-export changes. |
 
 The fixture run predates email drafts and the guest dashboard. The repository contains later cases for compound commands, browser storage and the additional API endpoints, but these runs give no result for those cases. [Manual fixture workflow](../.github/workflows/backend-tests.yml) · [Backend cases](../server/) · [Frontend cases](../web/tests/)
 

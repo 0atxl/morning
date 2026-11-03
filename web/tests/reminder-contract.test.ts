@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   parseCommandResponse,
+  withSelectedReminder,
+  postJSON,
   type CommandRequest,
 } from "../src/lib/command-api.ts";
 import { TranscriptBuffer } from "../src/lib/transcript.ts";
+import { confirmationText } from "../src/lib/spoken-reply.ts";
 
 // Definitions only. Running this suite requires separate user confirmation.
 const request: CommandRequest = {
@@ -24,6 +27,105 @@ const frame = (start: number, text: string, final = true, duration = 1) => ({
   duration,
   is_final: final,
   channel: { alternatives: [{ transcript: text }] },
+});
+
+test("reminder selection preserves the original relative-time reference and binds the response", () => {
+  const original = { ...request, transcript: "Change that to two minutes." };
+  const selected = withSelectedReminder(
+    original,
+    [{ id: "existing", dueAt: reminder.due_at }],
+    "existing",
+  );
+  assert.equal(selected.now, original.now);
+  assert.equal(selected.command_id, original.command_id);
+  assert.equal(selected.transcript, original.transcript);
+  const update = {
+    type: "reschedule_reminder",
+    reminder_id: "existing",
+    due_at: "2026-11-03T09:02:00+05:30",
+  };
+  const response = {
+    command_id: original.command_id,
+    actions: [update],
+    clarification: null,
+  };
+  assert.deepEqual(parseCommandResponse(response, selected), {
+    kind: "actions",
+    actions: [update],
+  });
+  assert.throws(() => parseCommandResponse(response, original));
+  assert.throws(() =>
+    parseCommandResponse(
+      { ...response, actions: [{ ...update, reminder_id: "another" }] },
+      selected,
+    ),
+  );
+  assert.throws(() =>
+    parseCommandResponse(
+      { ...response, actions: [update, reminder] },
+      selected,
+    ),
+  );
+  assert.throws(() => withSelectedReminder(original, [], "another"));
+  const confirmation = confirmationText(
+    [
+      {
+        id: "existing",
+        kind: "reminder",
+        title: "Water",
+        transcript: original.transcript,
+        dueAt: update.due_at,
+        timezone: request.timezone,
+      },
+    ],
+    "reschedule_reminder",
+  );
+  assert.match(confirmation, /^Reminder updated for /);
+});
+
+test("a conversational reply cannot be mixed with a saved action", () => {
+  const response = {
+    command_id: request.command_id,
+    actions: [],
+    clarification: null,
+    reply: "Hello! How can I help?",
+  };
+  assert.deepEqual(parseCommandResponse(response, request), {
+    kind: "reply",
+    text: response.reply,
+  });
+  assert.throws(() =>
+    parseCommandResponse({ ...response, actions: [reminder] }, request),
+  );
+});
+
+test("non-JSON proxy errors expose their HTTP status and rate limits keep their retry delay", async (t) => {
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () => new Response("<html>Bad gateway</html>", { status: 502 }),
+  );
+  await assert.rejects(
+    postJSON("/api/commands", request, new AbortController().signal),
+    /HTTP 502/,
+  );
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response("<html>Too many requests</html>", {
+        status: 429,
+        headers: { "Retry-After": "30" },
+      }),
+  );
+  await assert.rejects(
+    postJSON("/api/commands", request, new AbortController().signal),
+    (error: unknown) => {
+      assert.match(String(error), /request limit/);
+      assert.ok((error as { retryAt: number }).retryAt > Date.now() + 25_000);
+      return true;
+    },
+  );
 });
 
 test("interim revisions replace one another and Stop's last final segment is retained", () => {

@@ -70,7 +70,7 @@ If Deepgram omits `expires_in`, the browser response uses the requested 30-secon
 
 The URL assumes containerized audio such as MediaRecorder WebM/Opus. A browser sending raw PCM must supply its actual `encoding`, `sample_rate` and `channels` in the WebSocket URL. Interim captions can change. On Stop, flush pending audio and wait for Deepgram's final results before posting the transcript. Combine final segments in order without treating interim revisions as new commands.
 
-Token issuance allows 5 requests per client IP and 60 total requests per server process per UTC minute. Commands allow 10 per IP and 120 total per minute. Attempts count even if a provider fails. `429` responses include a `Retry-After` header in seconds. Limits reset at minute boundaries and process restart. They are not shared between server instances.
+Token issuance allows 30 requests per client IP and 300 total requests per server process per UTC minute. Commands allow 60 per IP and 600 total per minute. Speech allows 60 per IP and 600 total per minute. Attempts count even if a provider fails. `429` responses include a `Retry-After` header in seconds. Limits reset at minute boundaries and process restart. They are not shared between server instances. Provider account quotas are separate and are not changed by these application limits. An upstream HTTP 429 returns a distinct `voice_provider_rate_limited`, `command_provider_rate_limited` or `minutes_provider_rate_limited` error with a retry delay.
 
 For a loopback TCP peer, the limiter uses a valid `CF-Connecting-IP` supplied by Cloudflare Tunnel through nginx. The production origin must remain loopback-only. Direct non-loopback requests use their peer IP, and `X-Forwarded-For` is always ignored. This gives public visitors separate allowances while preserving the global cap. Visitors sharing one public IP still share that IP's allowance. A different ingress must sanitize its client identity before using this setup.
 
@@ -229,7 +229,7 @@ The saved `due_at` is an RFC 3339 instant. Go interprets it in the request's IAN
 }
 ```
 
-The record ID comes from the browser's snapshot. Groq receives the saved time and supplies the replacement time. With no clear target, the correction returns HTTP 200.
+The record ID comes from the browser's snapshot. Groq receives the saved time and supplies the replacement time. The dashboard supplies the sole reminder in the recording's conversation. If several reminders could be the target, it displays a choice and resubmits the original ID, transcript, timestamp and chosen snapshot. `selected_reminder_id` must match `reminder_context.id`; it records an explicit user selection. Relative durations are anchored to the original request's `now`. With no clear target, the correction returns HTTP 200.
 
 ```json
 {"command_id":"correction-2","actions":[],"clarification":"Which reminder should I move?"}
@@ -311,7 +311,7 @@ If either setting is missing, the endpoint returns `503 speech_not_configured`. 
 
 **Dashboard integration.** In the post-commit speech helper, try the MP3 first and use the existing browser voice if the request or playback fails. A replayed command stays silent. **Retry speech** uses the saved confirmation alone. It must never submit a command or write to IndexedDB.
 
-Send one JSON object with only `text`, a single line of 1 to 240 Unicode characters without surrounding whitespace. The request body is limited to 2 KiB and returned audio to 1 MiB. Speech has its own allowance of 10 requests per peer IP and 120 per server process per UTC minute.
+Send one JSON object with only `text`, a single line of 1 to 240 Unicode characters without surrounding whitespace. The request body is limited to 2 KiB and returned audio to 1 MiB. Speech has its own allowance of 60 requests per client IP and 600 per server process per UTC minute.
 
 ## Meeting minutes
 
@@ -372,18 +372,27 @@ Show `error.message` and retain the transcript. Command errors include `command_
 | `400` | `invalid_request` | Malformed JSON, unknown fields or invalid command context. |
 | `404` | `not_found` | Endpoint is outside this milestone. |
 | `405` | `method_not_allowed` | Use POST. |
-| `413` | `request_too_large` | Token body exceeds 1 KiB, speech body exceeds 2 KiB, command body exceeds 16 KiB or minutes body exceeds 64 KiB. |
+| `413` | `request_too_large` | Token body exceeds 1 KiB, speech body exceeds 2 KiB, command body exceeds 64 KiB or minutes body exceeds 64 KiB. |
 | `415` | `unsupported_media_type` | Send `application/json`. |
 | `429` | `rate_limited` | Wait for `Retry-After` before retrying. |
+| `429` | `voice_provider_rate_limited`, `command_provider_rate_limited`, `minutes_provider_rate_limited` | The provider, rather than Morning's application limiter, returned HTTP 429. Wait for the retry delay. |
 | `502` | `voice_provider_unavailable`, `command_provider_unavailable` | Provider request failed. |
 | `502` | `voice_provider_invalid_response`, `command_provider_invalid_response` | Provider output failed validation. |
 | `504` | `voice_provider_timeout`, `command_provider_timeout` | Provider exceeded the 20-second HTTP timeout. |
 
-Command and contact IDs allow 1 to 128 ASCII letters, digits, hyphens or underscores. Transcripts allow up to 8192 UTF-8 bytes. Supply at most 20 relevant contacts, each with a name up to 200 characters and a plain email address up to 254 characters. Reminder titles and draft subjects allow up to 200 characters. Draft bodies allow up to 8000 characters and can include line breaks. The whole command body still has a 16 KiB limit. There is no automatic provider retry. Keys must stay in the server environment, without `VITE_` prefixes.
+Command and contact IDs allow 1 to 128 ASCII letters, digits, hyphens or underscores. Transcripts allow up to 8192 UTF-8 bytes. Supply at most 20 relevant contacts, each with a name up to 200 characters and a plain email address up to 254 characters. Reminder titles and draft subjects allow up to 200 characters. Draft bodies allow up to 8000 characters and can include line breaks. The whole command body allows 64 KiB to accommodate a saved draft snapshot. Groq may return up to 4096 completion tokens. There is no automatic provider retry. Keys must stay in the server environment, without `VITE_` prefixes.
+
+## Conversational replies and draft revisions
+
+Greetings and capability questions go to Groq through the same interpretation request. The model returns a standalone `reply` action with at most 240 characters. Go validates it and returns `actions: []`, `clarification: null` and `reply: "..."` to the dashboard. No reminder or draft is created. The browser saves the reply on its conversation turn before attempting speech. Replies cannot accompany saved actions. The language is model-generated; application validation and idempotency remain deterministic.
+
+For a spoken draft edit, include `draft_context` with the saved `id`, `subject`, `body`, `recipient` and `to`. The model receives those fields without the record ID and returns `update_draft` with the complete revised `subject` and `body`. Go assigns `draft_id` from the supplied snapshot. If a user picked among drafts, `selected_draft_id` must match that snapshot. A missing draft asks which one to update. The browser atomically checks the receipt, conversation, saved subject, body and recipient before updating the original record. A concurrent manual edit aborts a stale update. Replaying an applied request preserves later changes and creates no new draft. Voice edits preserve the recipient; Quick View can edit that field by hand.
+
+The drafting prompt asks for a developed email, usually 60 to 120 words unless the user asks for brevity, with a clear request, relevant supplied detail and a natural close. It prohibits invented dates, reasons, promises and sender names. These are generation instructions; model quality still needs a live review.
 
 ## Verification
 
-Tests require explicit user confirmation for each run and run only on GitHub Actions. The manually dispatched [Backend tests workflow](../.github/workflows/backend-tests.yml) runs the provider-fixture suite for an approved revision. It has no automatic triggers and needs no provider credentials. Do not run the suite locally or dispatch it without approval for that exact revision and scope.
+Tests require explicit user confirmation for each run and run only on GitHub Actions. The manually dispatched [Fixture tests workflow](../.github/workflows/backend-tests.yml) runs Go provider fixtures and isolated Node browser-logic fixtures for an approved revision. It has no automatic triggers and needs no provider credentials. It covers contracts, storage, retries, speech stubs and calendar serialization without opening a browser or contacting a live provider. Do not run the suite locally or dispatch it without approval for that exact revision and scope.
 
 The custom test transport returns local `testdata/` fixtures and cannot reach live providers. Cases cover a draft alone, the Friday compound command, contact ambiguity despite a confident model choice, valid and invalid selections, all-or-nothing output validation, the original reminder response, missing context, provider failures, timezones and token grants. The new draft cases have been authored but have not run. No provider probes, browser QA or CI were run for this change.
 

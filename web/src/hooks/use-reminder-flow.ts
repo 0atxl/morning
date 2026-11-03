@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import {
   interpretCommand,
   withSelectedContact,
+  withSelectedReminder,
+  withSelectedDraft,
   RequestError,
   type CommandRequest,
   type CommandResponse,
@@ -17,6 +19,8 @@ import {
   type Turn,
   updateResult,
   type StoredResult,
+  type StoredReminder,
+  type StoredDraft,
 } from "@/lib/reminder-store";
 import { VoiceCapture, type CapturePhase } from "@/lib/voice-capture";
 import type { Captions } from "@/lib/transcript";
@@ -43,11 +47,14 @@ export type VoiceView = {
   captions: Captions;
   question: string;
   options: ContactOption[];
+  reminderOptions: StoredReminder[];
+  draftOptions: StoredDraft[];
   deliveryNotice: string;
   error: string;
   status: string;
   retryAt: number;
   playbackError: string;
+  replyAvailable: boolean;
   turnId?: string;
 };
 
@@ -56,11 +63,14 @@ export const readyVoice: VoiceView = {
   captions: { final: "", interim: "" },
   question: "",
   options: [],
+  reminderOptions: [],
+  draftOptions: [],
   deliveryNotice: "",
   error: "",
   status: "",
   retryAt: 0,
   playbackError: "",
+  replyAvailable: false,
 };
 
 type Pending = {
@@ -68,6 +78,8 @@ type Pending = {
   turnSaved: boolean;
   request: CommandRequest;
   response?: CommandResponse;
+  reminders: StoredReminder[];
+  drafts: StoredDraft[];
 };
 
 function errorMessage(error: unknown) {
@@ -80,7 +92,7 @@ function errorMessage(error: unknown) {
   if (error instanceof DOMException && error.name === "TimeoutError")
     return "Morning's request timed out. Your transcript is still available. Please retry.";
   if (error instanceof TypeError)
-    return "Morning couldn't connect. Check your connection and that the Go server is running, then retry.";
+    return "Morning couldn't connect. Check your connection, then retry. Your transcript is still available.";
   return error instanceof Error
     ? error.message
     : "Morning couldn't finish. Your transcript is still available. Please retry.";
@@ -122,14 +134,14 @@ export function useReminderFlow() {
     speech.current = null;
   }
 
-  function speak(text: string) {
+  function speak(text: string, saved = true) {
     cancelSpeech();
     const reply = new SpokenReply(text, (state, message) => {
       if (!mounted.current || speech.current !== reply) return;
       reportExecution((previous) => ({
         ...previous,
         running: state === "speaking",
-        status: state === "speaking" ? "Speaking" : "Saved",
+        status: state === "speaking" ? "Speaking" : saved ? "Saved" : "Replied",
       }));
       setView((previous) => ({
         ...previous,
@@ -137,6 +149,7 @@ export function useReminderFlow() {
       }));
     });
     speech.current = reply;
+    setView((previous) => ({ ...previous, replyAvailable: true }));
     void reply.start();
   }
 
@@ -242,12 +255,54 @@ export function useReminderFlow() {
       command.response = await interpretCommand(command.request, abort.signal);
       if (!current(id)) return;
     }
+    if (command.response.kind === "reply") {
+      const text = command.response.text;
+      command.turn = { ...command.turn, reply: text };
+      await storeTurn(command.turn);
+      if (!current(id)) return;
+      setTurns((previous) =>
+        previous.map((turn) =>
+          turn.id === command.turn.id ? command.turn : turn,
+        ),
+      );
+      reportExecution({
+        requestId: command.request.command_id,
+        stages: ["ORB"],
+        status: "Replied",
+        running: false,
+      });
+      setView((previous) => ({
+        ...previous,
+        phase: "saved",
+        status: text,
+        question: "",
+        options: [],
+        reminderOptions: [],
+        draftOptions: [],
+        playbackError: "",
+      }));
+      retainedAudio.current = [];
+      speak(text, false);
+      return;
+    }
     if (command.response.kind === "clarification") {
       const { question, options } = command.response;
+      const reminderOptions = /which\b.*\b(?:reminder|task)/i.test(question)
+        ? command.reminders
+        : [];
+      const draftOptions = /which\b.*\b(?:draft|email)/i.test(question)
+        ? command.drafts
+        : [];
       reportExecution({
         requestId: command.request.command_id,
         stages: options.length ? ["MAIL"] : ["ORB"],
-        status: options.length ? "Choose a contact" : "Clarification needed",
+        status: options.length
+          ? "Choose a contact"
+          : reminderOptions.length
+            ? "Choose a reminder"
+            : draftOptions.length
+              ? "Choose a draft"
+              : "Clarification needed",
         running: false,
       });
       setView((previous) => ({
@@ -255,23 +310,37 @@ export function useReminderFlow() {
         phase: "clarification",
         question,
         options,
+        reminderOptions,
+        draftOptions,
         error: "",
       }));
       return;
     }
     setView((previous) => ({ ...previous, phase: "saving", error: "" }));
+    const rescheduling =
+      command.response.actions[0]?.type === "reschedule_reminder";
+    const updatingDraft = command.response.actions[0]?.type === "update_draft";
     const stages: ExecutionActivity["stages"] = command.response.actions.map(
-      (action) => (action.type === "draft_email" ? "MAIL" : "DIAL"),
+      (action) =>
+        action.type === "draft_email"
+          ? "MAIL"
+          : action.type === "reschedule_reminder" ||
+              action.type === "update_draft"
+            ? "PEN"
+            : "DIAL",
     );
     reportExecution({
       requestId: command.request.command_id,
       stages,
-      status:
-        stages.length === 2
-          ? "Saving draft and reminder together"
-          : stages[0] === "MAIL"
-            ? "Saving draft"
-            : "Saving reminder",
+      status: rescheduling
+        ? "Updating reminder"
+        : updatingDraft
+          ? "Updating draft"
+          : stages.length === 2
+            ? "Saving draft and reminder together"
+            : stages[0] === "MAIL"
+              ? "Saving draft"
+              : "Saving reminder",
       running: true,
     });
     saving.current = true;
@@ -301,15 +370,26 @@ export function useReminderFlow() {
       stages,
       status: !outcome.created
         ? "Command already saved"
-        : hasDraft && hasReminder
-          ? "Draft and reminder saved together"
-          : hasDraft
-            ? "Draft saved"
-            : "Reminder saved",
+        : rescheduling
+          ? "Reminder updated"
+          : updatingDraft
+            ? "Draft updated"
+            : hasDraft && hasReminder
+              ? "Draft and reminder saved together"
+              : hasDraft
+                ? "Draft saved"
+                : "Reminder saved",
       running: false,
     });
     const confirmation = outcome.created
-      ? confirmationText(outcome.records)
+      ? confirmationText(
+          outcome.records,
+          rescheduling
+            ? "reschedule_reminder"
+            : updatingDraft
+              ? "update_draft"
+              : undefined,
+        )
       : "This command is already saved";
     setView((previous) => ({
       ...previous,
@@ -317,6 +397,8 @@ export function useReminderFlow() {
       error: "",
       question: "",
       options: [],
+      reminderOptions: [],
+      draftOptions: [],
       deliveryNotice: hasDraft
         ? "Open the draft to review and send in Gmail."
         : "",
@@ -354,6 +436,18 @@ export function useReminderFlow() {
     const sessionId = selectedSession;
     if (!sessionId || sessionId === earlierActivity || selectingRef.current)
       return;
+    const reminders = records
+      .filter(
+        (record): record is StoredReminder =>
+          record.kind === "reminder" && record.sessionId === sessionId,
+      )
+      .map((record) => ({ ...record }));
+    const drafts = records
+      .filter(
+        (record): record is StoredDraft =>
+          record.kind === "draft" && record.sessionId === sessionId,
+      )
+      .map((record) => ({ ...record }));
     setCommandSession(sessionId);
     busy.current = true;
     orbCore.current?.style.removeProperty("--level");
@@ -422,12 +516,33 @@ export function useReminderFlow() {
       pending.current = {
         turn,
         turnSaved: false,
+        reminders,
+        drafts,
         request: {
           command_id: turn.id,
           transcript,
           now: turn.createdAt,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           contacts: relevantContacts(contacts, transcript),
+          ...(reminders.length === 1
+            ? {
+                reminder_context: {
+                  id: reminders[0].id,
+                  due_at: reminders[0].dueAt,
+                },
+              }
+            : {}),
+          ...(drafts.length === 1
+            ? {
+                draft_context: {
+                  id: drafts[0].id,
+                  subject: drafts[0].subject,
+                  body: drafts[0].body,
+                  recipient: drafts[0].recipient,
+                  to: drafts[0].to,
+                },
+              }
+            : {}),
         },
       };
       await savePending(id);
@@ -483,6 +598,8 @@ export function useReminderFlow() {
       error: "",
       question: "",
       options: [],
+      reminderOptions: [],
+      draftOptions: [],
       status: "",
     }));
   }
@@ -546,6 +663,52 @@ export function useReminderFlow() {
     await retry();
   }
 
+  async function chooseReminder(reminderId: string) {
+    if (busy.current || Date.now() < view.retryAt) return;
+    const command = pending.current;
+    if (
+      !command ||
+      command.response?.kind !== "clarification" ||
+      !/which\b.*\b(?:reminder|task)/i.test(command.response.question)
+    )
+      return;
+    try {
+      command.request = withSelectedReminder(
+        command.request,
+        command.reminders,
+        reminderId,
+      );
+    } catch (error) {
+      showError(error);
+      return;
+    }
+    command.response = undefined;
+    await retry();
+  }
+
+  async function chooseDraft(draftId: string) {
+    if (busy.current || Date.now() < view.retryAt) return;
+    const command = pending.current;
+    if (
+      !command ||
+      command.response?.kind !== "clarification" ||
+      !/which\b.*\b(?:draft|email)/i.test(command.response.question)
+    )
+      return;
+    try {
+      command.request = withSelectedDraft(
+        command.request,
+        command.drafts,
+        draftId,
+      );
+    } catch (error) {
+      showError(error);
+      return;
+    }
+    command.response = undefined;
+    await retry();
+  }
+
   async function addContact(name: string, email: string) {
     const saved = await addGuestContact(name, email);
     if (mounted.current)
@@ -595,6 +758,7 @@ export function useReminderFlow() {
           ...visibleView,
           turnId: latest.id,
           captions: { final: latest.transcript, interim: "" },
+          status: latest.reply ?? "",
         }
       : visibleView,
     orbCore,
@@ -618,6 +782,8 @@ export function useReminderFlow() {
     contacts,
     addContact,
     chooseContact,
+    chooseReminder,
+    chooseDraft,
     record,
     retry,
     cancel,
