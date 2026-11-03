@@ -187,7 +187,7 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) allow(w http.ResponseWriter, r *http.Request, limiter *rateLimiter) bool {
-	if retryAfter := limiter.allow(r.RemoteAddr, a.clock()); retryAfter > 0 {
+	if retryAfter := limiter.allow(clientAddress(r), a.clock()); retryAfter > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 		writeError(w, http.StatusTooManyRequests, "", "rate_limited", "Too many requests. Please wait before trying again.", true)
 		return false
