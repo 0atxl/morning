@@ -13,18 +13,31 @@ import (
 const websocketURL = "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-US&interim_results=true&smart_format=true"
 
 type commandRequest struct {
-	CommandID         string    `json:"command_id"`
-	Transcript        string    `json:"transcript"`
-	Now               string    `json:"now"`
-	Timezone          string    `json:"timezone"`
-	Contacts          []contact `json:"contacts,omitempty"`
-	SelectedContactID *string   `json:"selected_contact_id,omitempty"`
+	CommandID         string           `json:"command_id"`
+	Transcript        string           `json:"transcript"`
+	Now               string           `json:"now"`
+	Timezone          string           `json:"timezone"`
+	Contacts          []contact        `json:"contacts,omitempty"`
+	SelectedContactID *string          `json:"selected_contact_id,omitempty"`
+	ReminderContext   *reminderContext `json:"reminder_context,omitempty"`
+}
+
+type reminderContext struct {
+	ID    string    `json:"id"`
+	DueAt time.Time `json:"due_at"`
 }
 
 type action struct {
-	Type        string `json:"type"`
-	Title       string `json:"title,omitempty"`
-	DueAt       string `json:"due_at,omitempty"`
+	Type       string `json:"type"`
+	ReminderID string `json:"reminder_id,omitempty"`
+	Title      string `json:"title,omitempty"`
+	DueAt      string `json:"due_at,omitempty"`
+	Start      string `json:"start,omitempty"`
+	End        string `json:"end,omitempty"`
+	Timezone   string `json:"timezone,omitempty"`
+	// Groq quotes the spoken start and end or duration. Go removes these before responding.
+	StartPhrase string `json:"start_phrase,omitempty"`
+	EndPhrase   string `json:"end_phrase,omitempty"`
 	ToContactID string `json:"to_contact_id,omitempty"`
 	Subject     string `json:"subject,omitempty"`
 	Body        string `json:"body,omitempty"`
@@ -63,6 +76,7 @@ type api struct {
 	clock     func() time.Time
 	tokens    *rateLimiter
 	commands  *rateLimiter
+	speech    *speechService
 }
 
 func newAPI(p *providers, clock func() time.Time) http.Handler {
@@ -71,6 +85,7 @@ func newAPI(p *providers, clock func() time.Time) http.Handler {
 		clock:     clock,
 		tokens:    newRateLimiter(5, 60),
 		commands:  newRateLimiter(10, 120),
+		speech:    newSpeechService(p.client.Transport),
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -82,6 +97,10 @@ func newAPI(p *providers, clock func() time.Time) http.Handler {
 			handler = a.voiceToken
 		case "/api/commands":
 			handler = a.command
+		case "/api/speech":
+			handler = a.speak
+		case "/api/minutes":
+			handler = a.minutes
 		default:
 			writeError(w, http.StatusNotFound, "", "not_found", "This endpoint does not exist.", false)
 			return
@@ -136,7 +155,12 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := interpretation{Actions: model.Actions, Clarification: model.Clarification}
-	if err := validateInterpretation(&result, now, location); err != nil {
+	if validateInterpretation(&result, now, location) != nil || validateCalendarCommand(&result, request.Transcript) != nil {
+		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
+		return
+	}
+	result, err = resolveCorrection(result, request, location)
+	if err != nil {
 		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 		return
 	}
@@ -202,6 +226,10 @@ func writeProviderError(w http.ResponseWriter, id, stage string, err error) {
 	code, message := stage+"_provider_unavailable", "Morning couldn't interpret your command. Please try again."
 	if stage == "voice" {
 		message = "Morning couldn't start live captions. Please try again."
+	} else if stage == "speech" {
+		message = "Morning couldn't generate the spoken confirmation."
+	} else if stage == "minutes" {
+		message = "Morning couldn't prepare the meeting minutes. Please try again."
 	}
 	status := http.StatusBadGateway
 	if errors.Is(err, errInvalidProviderOutput) {

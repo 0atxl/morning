@@ -293,7 +293,7 @@ func TestJSONOnlyPostRoutes(t *testing.T) {
 		status                          int
 	}{
 		{http.MethodGet, "/api/voice/token", "application/json", `{}`, 405},
-		{http.MethodPost, "/api/minutes", "application/json", `{}`, 404},
+		{http.MethodPost, "/api/unknown", "application/json", `{}`, 404},
 		{http.MethodPost, "/api/voice/token", "text/plain", `{}`, 415},
 		{http.MethodPost, "/api/voice/token", "application/json", `{"ttl_seconds":3600}`, 400},
 		{http.MethodPost, "/api/voice/token", "application/json", `null`, 400},

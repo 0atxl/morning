@@ -1,0 +1,9 @@
+{
+  "choices": [{
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "{\"actions\":[{\"type\":\"create_calendar_event\",\"title\":\"Project review\",\"start\":\"2026-11-06T15:00:00+05:30\",\"end\":\"30m\",\"start_phrase\":\"Friday at three PM\",\"end_phrase\":\"for thirty minutes\"}],\"clarification\":null,\"recipient_name\":null}"
+    }
+  }]
+}

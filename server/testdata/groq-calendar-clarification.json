@@ -1,0 +1,9 @@
+{
+  "choices": [{
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "{\"actions\":[],\"clarification\":\"How long should the project review last?\",\"recipient_name\":null}"
+    }
+  }]
+}

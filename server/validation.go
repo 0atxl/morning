@@ -62,6 +62,11 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 	if err := validateContacts(request); err != nil {
 		return time.Time{}, nil, err
 	}
+	if reminder := request.ReminderContext; reminder != nil {
+		if !validCommandID(reminder.ID) || reminder.ID == request.CommandID || reminder.DueAt.IsZero() {
+			return time.Time{}, nil, errors.New("reminder_context requires a saved reminder ID distinct from command_id and its RFC 3339 due_at.")
+		}
+	}
 	return now.In(location), location, nil
 }
 
@@ -75,6 +80,22 @@ func validText(value string, maxLength int) bool {
 		}
 	}
 	return true
+}
+
+const offsetTimestamp = "2006-01-02T15:04:05.999999999-07:00"
+
+func parseZonedInstant(value string, location *time.Location) (time.Time, error) {
+	instant, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	local := instant.In(location)
+	_, suppliedOffset := instant.Zone()
+	_, expectedOffset := local.Zone()
+	if suppliedOffset != expectedOffset {
+		return time.Time{}, fmt.Errorf("timestamp offset does not match %s", location)
+	}
+	return local, nil
 }
 
 func validateInterpretation(result *interpretation, now time.Time, location *time.Location) error {
@@ -98,21 +119,43 @@ func validateInterpretation(result *interpretation, now time.Time, location *tim
 		}
 		seen[action.Type] = true
 		switch action.Type {
-		case "create_reminder":
-			if !validText(action.Title, 200) || action.ToContactID != "" || action.Subject != "" || action.Body != "" {
+		case "create_reminder", "reschedule_reminder":
+			if action.ToContactID != "" || action.Subject != "" || action.Body != "" {
 				return errors.New("invalid reminder fields")
 			}
-			due, err := time.Parse(time.RFC3339, action.DueAt)
+			if action.Type == "reschedule_reminder" {
+				if len(result.Actions) != 1 || action.Title != "" {
+					return errors.New("a correction can only change one reminder time")
+				}
+			} else if !validText(action.Title, 200) {
+				return errors.New("invalid reminder title")
+			}
+			due, err := parseZonedInstant(action.DueAt, location)
 			if err != nil || !due.After(now) {
 				return errors.New("due_at must be a future RFC 3339 timestamp")
 			}
-			_, suppliedOffset := due.Zone()
-			_, expectedOffset := due.In(location).Zone()
-			if suppliedOffset != expectedOffset {
-				return fmt.Errorf("due_at offset does not match %s", location)
-			}
 			// Numeric offsets are explicit even for UTC, returned as +00:00.
-			action.DueAt = due.In(location).Format("2006-01-02T15:04:05.999999999-07:00")
+			action.DueAt = due.Format(offsetTimestamp)
+		case "create_calendar_event":
+			if len(result.Actions) != 1 || !validText(action.Title, 200) {
+				return errors.New("expected one titled calendar event")
+			}
+			start, err := parseZonedInstant(action.Start, location)
+			if err != nil || !start.After(now) || start.Nanosecond() != 0 {
+				return errors.New("invalid calendar start")
+			}
+			// Resolve a spoken duration in elapsed time, including across an offset change.
+			var end time.Time
+			if duration, parseErr := time.ParseDuration(action.End); parseErr == nil {
+				end = start.Add(duration)
+			} else {
+				end, err = parseZonedInstant(action.End, location)
+			}
+			if err != nil || !end.After(start) || end.Nanosecond() != 0 || end.Year() > 9999 {
+				return errors.New("invalid calendar end")
+			}
+			action.Start, action.End = start.Format(offsetTimestamp), end.Format(offsetTimestamp)
+			action.Timezone = location.String()
 		case "draft_email":
 			if !validCommandID(action.ToContactID) || !validText(action.Subject, 200) || !validDraftBody(action.Body) || action.Title != "" || action.DueAt != "" {
 				return errors.New("invalid draft fields")
@@ -139,7 +182,41 @@ func validDraftBody(body string) bool {
 var (
 	draftThenReminder = regexp.MustCompile(`(?is)^\s*(?:please\s+)?(?:draft|write|compose)\b.*\be-?mail\b.*\band\s+(?:also\s+)?(?:please\s+)?remind\s+me\b`)
 	reminderThenDraft = regexp.MustCompile(`(?is)^\s*(?:please\s+)?remind\s+me\b.*\band\s+(?:also\s+)?(?:please\s+)?(?:draft|write|compose)\b.*\be-?mail\b`)
+	scheduleLead      = regexp.MustCompile(spokenPrefix + `(?:schedule|book)\b`)
+	reminderLead      = regexp.MustCompile(spokenPrefix + `(?:remind\s+me|(?:set|create|schedule)\s+(?:me\s+)?(?:(?:a|an|my)\s+)?(?:reminder|alert))\b`)
 )
+
+// Check calendar intent before reminder and contact resolution can turn a misclassified
+// event into a question about an unrelated record.
+func validateCalendarCommand(result *interpretation, transcript string) error {
+	if len(result.Actions) == 0 {
+		return nil
+	}
+	isEvent := result.Actions[0].Type == "create_calendar_event"
+	wantsReminder := reminderLead.MatchString(transcript)
+	if isEvent && (wantsReminder || newCommandLead.MatchString(transcript)) {
+		return errors.New("a reminder or draft request cannot create a calendar event")
+	}
+	if scheduleLead.MatchString(transcript) && !wantsReminder && !isEvent {
+		return errors.New("a scheduling request requires a calendar event")
+	}
+	if !isEvent {
+		return nil
+	}
+	event := &result.Actions[0]
+	var question string
+	before, after, foundStart := strings.Cut(transcript, event.StartPhrase)
+	if !validText(event.StartPhrase, 200) || !foundStart {
+		question = "When should the event start?"
+	} else if !validText(event.EndPhrase, 200) || !(strings.Contains(before, event.EndPhrase) || strings.Contains(after, event.EndPhrase)) {
+		question = "How long should the event last?"
+	}
+	event.StartPhrase, event.EndPhrase = "", ""
+	if question != "" {
+		*result = interpretation{Actions: []action{}, Clarification: &question}
+	}
+	return nil
+}
 
 // Check explicit coordinated requests against the transcript, independently of
 // the provider's actions or recipient evidence. Clarifications remain blocked.

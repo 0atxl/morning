@@ -1,0 +1,9 @@
+{
+  "choices": [{
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "{\"summary\":\"The invoice needs a review by Monday. The team discussed examples of voice commands.\",\"decisions\":[],\"action_items\":[{\"task\":\"Review the invoice.\",\"owner\":null,\"deadline\":\"Monday\",\"source\":\"The invoice needs a review by Monday.\"}],\"open_questions\":[]}"
+    }
+  }]
+}

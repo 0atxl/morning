@@ -1,8 +1,10 @@
 # Morning Go API
 
-The guest voice flow has two endpoints. The browser streams microphone audio directly to Deepgram, then sends the complete final transcript to Go once. Go asks Groq to interpret it and returns a validated reminder, an editable email draft, both together, or a clarification question.
+The browser streams microphone audio directly to Deepgram, then sends the complete final transcript to Go once. A command can create a reminder, prepare an editable email draft, do both together, or move an existing reminder. When Morning needs more information it returns a question and zero actions.
 
-The browser makes the actions real by committing them to IndexedDB using `command_id` to prevent duplicate saves. Speak the saved result with browser speech synthesis only after that transaction commits. Drafts stay editable and unsent. The API does not save records, send email, schedule alerts or generate spoken confirmations.
+The browser commits actions to IndexedDB using `command_id` to prevent duplicate saves. After a new save, it can request a short spoken confirmation from the optional speech endpoint. The existing browser voice provides a fallback. Drafts stay editable and unsent.
+
+A calendar command returns one event for a client to preview and export. The shipped dashboard currently consumes reminder creation and email-draft actions only. Reminder corrections, calendar `.ics` download, meeting minutes and ElevenLabs playback still need browser integration. The endpoint examples below describe the backend contracts.
 
 ## Local startup
 
@@ -12,23 +14,27 @@ From the repository root:
 
 ```bash
 cd server
-cp .env.example .env
-# Fill in the two keys in .env using your editor.
+[ -e .env ] || cp .env.example .env
+# Fill in the required keys in .env. Add both ElevenLabs settings to enable speech.
 set -a
 . ./.env
 set +a
 go run -buildvcs=false .
 ```
 
-The default address is `127.0.0.1:8080`. Startup does not contact either provider. The shell loads `.env`; the Go process reads environment variables. `-buildvcs=false` also permits startup from a source snapshot without usable Git metadata. Keep `.env` out of Git. Production should inject secrets through the host's environment settings.
+The default address is `127.0.0.1:8080`. The shell loads `server/.env` before Go starts. Restart the process with the updated environment after changing a value. `-buildvcs=false` also permits startup from a source snapshot without usable Git metadata. Keep `.env` out of Git.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DEEPGRAM_API_KEY` | Yes | Permanent server-side Deepgram key with Member or higher permission to grant temporary tokens. |
 | `GROQ_API_KEY` | Yes | Server-side Groq key for `openai/gpt-oss-20b`. |
+| `ELEVENLABS_API_KEY` | No | Server-side ElevenLabs key with text-to-speech access. |
+| `ELEVENLABS_VOICE_ID` | No | ID of an ElevenLabs voice available to that key. |
 | `LISTEN_ADDR` | No | Go listen address. Set `0.0.0.0:8080` when the hosting environment requires it. |
 
-Use a same-origin `/api` proxy in the frontend development server, targeting `http://127.0.0.1:8080`. For Vite, the frontend session can set `server.proxy` to `{ "/api": "http://127.0.0.1:8080" }`. Production must serve the browser and `/api` on the same HTTPS origin. Go serves only the API, so the hosting layer must serve `web/` assets. No CORS configuration is needed for this arrangement.
+On the Azure VM, use `sudoedit /etc/morning/server.env` to set both ElevenLabs variables and `sudo systemctl restart morning-api.service` to load them. Use the Go service environment for these values. The frontend build needs neither. Startup and command interpretation work with either ElevenLabs setting blank.
+
+The included Vite development server proxies `/api` to `http://127.0.0.1:8080`. Production must serve the browser and `/api` on the same HTTPS origin. Go serves only the API, so the hosting layer serves the compiled web assets. No CORS configuration is needed for this arrangement.
 
 ## Temporary voice token
 
@@ -188,15 +194,159 @@ Save neither action while waiting for a selection. Retain the pending request an
 
 A missing contact also returns zero actions and a question. Add the contact locally and submit a complete revised request with a new command ID. A missing or ambiguous reminder time blocks the draft as well, until a complete revised command resolves it.
 
+### Correct a saved reminder
+
+Suppose the guest said "Draft Priya an email asking for the slides, and remind me Friday at ten AM to follow up." The browser saved both results under the first command receipt, and the guest edited the draft. For the next recording, send a fresh command ID and the saved reminder's ID and due time. Omit `reminder_context` if the browser cannot identify one relevant saved reminder.
+
+```json
+{
+  "command_id": "correction-2",
+  "transcript": "Actually, make that eleven.",
+  "now": "2026-11-03T09:02:00+05:30",
+  "timezone": "Asia/Kolkata",
+  "reminder_context": {
+    "id": "draft-follow-up-1",
+    "due_at": "2026-11-06T10:00:00+05:30"
+  }
+}
+```
+
+The saved `due_at` is an RFC 3339 instant. Go interprets it in the request's IANA timezone. In this example the saved time supplies both Friday and AM. HTTP 200 returns one update.
+
+```json
+{
+  "command_id": "correction-2",
+  "actions": [
+    {
+      "type": "reschedule_reminder",
+      "reminder_id": "draft-follow-up-1",
+      "due_at": "2026-11-06T11:00:00+05:30"
+    }
+  ],
+  "clarification": null
+}
+```
+
+The record ID comes from the browser's snapshot. Groq receives the saved time and supplies the replacement time. With no clear target, the correction returns HTTP 200.
+
+```json
+{"command_id":"correction-2","actions":[],"clarification":"Which reminder should I move?"}
+```
+
+An unclear time also returns an empty array and one question. Save a correction in one IndexedDB transaction over reminders and command receipts. First check the correction's receipt. On a replay, use its saved reminder ID. On a new correction, read the existing reminder by `reminder_id`, update only its due time, and add the receipt. If the record is missing or its due time has changed since the supplied snapshot, abort and refresh the context. An HTTP retry reuses the full request, including its ID and snapshot. Update the visible row and speak the new time after a successful new commit. The draft can keep its edited subject and body throughout.
+
+### Calendar event for download
+
+Send the usual command request to `POST /api/commands`.
+
+```json
+{
+  "command_id": "review-1",
+  "transcript": "Schedule a project review Friday at three PM for thirty minutes.",
+  "now": "2026-11-03T09:00:00+05:30",
+  "timezone": "Asia/Kolkata"
+}
+```
+
+Example `200 OK` response
+
+```json
+{
+  "command_id": "review-1",
+  "actions": [{
+    "type": "create_calendar_event",
+    "title": "Project review",
+    "start": "2026-11-06T15:00:00+05:30",
+    "end": "2026-11-06T15:30:00+05:30",
+    "timezone": "Asia/Kolkata"
+  }],
+  "clarification": null
+}
+```
+
+An event is a standalone action. Both timestamps have second precision and explicit offsets. Display them in the returned IANA timezone. Go checks that the start is in the future and the end follows it. A spoken duration advances the start by elapsed time, including across a daylight-saving transition.
+
+If the speaker omits the duration or finish time, a clarification can return HTTP 200 with this body.
+
+```json
+{"command_id":"review-1","actions":[],"clarification":"How long should the project review last?"}
+```
+
+A missing date or ambiguous start time also requires a question. Offer the download only for a completed event. "Remind me in ten minutes to schedule a meeting" uses the existing reminder action.
+
+For a local `.ics` file, write one `VEVENT` in a `VCALENDAR` with `VERSION:2.0` and a `PRODID`. Use the escaped title as `SUMMARY`, a stable `UID` derived from the command ID, and a UTC `DTSTAMP`. For this example the UTC event times are `DTSTART:20261106T093000Z` and `DTEND:20261106T100000Z`. Use CRLF line endings and fold long lines at 75 octets. A second download can reuse the saved event without calling Groq. [iCalendar file format](https://www.rfc-editor.org/rfc/rfc5545)
+
 ### Saving and retries
 
-Keep the original request on an explicit HTTP retry. The server stores no command history and can call Groq again. The browser must use one IndexedDB read/write transaction spanning reminders, drafts and command receipts. Check the unique receipt by `command_id`; if present, reuse its saved records and ignore the replay. Otherwise, create every returned record and add the receipt in that same transaction. One reminder and one draft can use the same ID in their separate stores.
+For create and draft actions, keep the original request on an explicit HTTP retry. The server stores no command history and can call Groq again. The browser must use one IndexedDB read/write transaction spanning reminders, drafts and command receipts. Check the unique receipt by `command_id`; if present, reuse its saved records and ignore the replay. Otherwise, create every returned record and add the receipt in that same transaction. One reminder and one draft can use the same ID in their separate stores.
 
 If any write fails, abort all writes, including the receipt. Retrying after an abort can save the whole result. Retrying after a commit must preserve both records and any later draft edits. Account for existing reminder records when introducing command receipts. Speak only after the new transaction completes, and never announce another success on a replay. An error response contains no actions.
 
 Go uses Groq's [strict JSON schema mode](https://console.groq.com/docs/structured-outputs) for `openai/gpt-oss-20b`. It checks action counts and fields, contact membership, text limits, future reminder timestamps and IANA offsets. UTC output uses `+00:00`. Unsupported actions, duplicate action types, mixed draft/reminder fields, refusals, truncated output and tool calls are rejected. Transcript and contact context are data in a separate user message. There are no tools or server-side action execution.
 
 Groq interprets natural language and computes the requested due time. Go validates the structure and time constraints; it does not independently parse every spoken time expression. A fixture response establishes the intended contract, not live model accuracy.
+
+## Spoken confirmation
+
+After IndexedDB commits a new action, compose one short line from the saved action type and its saved due time, if any. Send only that line. Keep transcripts, reminder titles, draft content and meeting minutes out of synthesis requests.
+
+```http
+POST /api/speech HTTP/1.1
+Content-Type: application/json
+
+{"text":"Draft saved. I’ll remind you Friday at ten."}
+```
+
+On success, the response is `200 OK` with `Content-Type: audio/mpeg` and `Cache-Control: no-store`. The body contains raw MP3 bytes. Read it with `response.blob()` for playback. Go requests `mp3_44100_128` using Flash v2.5 (`eleven_flash_v2_5`). [ElevenLabs speech API](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)
+
+An ElevenLabs outage returns `502 Bad Gateway` with `Content-Type: application/json`.
+
+```json
+{"error":{"code":"speech_provider_unavailable","message":"Morning couldn't generate the spoken confirmation.","retryable":true}}
+```
+
+If either setting is missing, the endpoint returns `503 speech_not_configured`. A provider timeout returns `504 speech_provider_timeout` after eight seconds. Empty, oversized or unrecognized audio returns `502 speech_provider_invalid_response`.
+
+**Dashboard integration.** In the post-commit speech helper, try the MP3 first and use the existing browser voice if the request or playback fails. A replayed command stays silent. **Retry speech** uses the saved confirmation alone. It must never submit a command or write to IndexedDB.
+
+Send one JSON object with only `text`, a single line of 1 to 240 Unicode characters without surrounding whitespace. The request body is limited to 2 KiB and returned audio to 1 MiB. Speech has its own allowance of 10 requests per peer IP and 120 per server process per UTC minute.
+
+## Meeting minutes
+
+After a meeting ends, send the completed transcript in order to `POST /api/minutes` with `Content-Type: application/json`. The entire request body can contain up to 64 KiB. The endpoint uses the existing Groq key and shares the command endpoint's rate limit. Requests spoken during the meeting are discussion. The endpoint returns editable text and performs no reminder, draft or email operations.
+
+```json
+{"transcript":"We’ll ship Friday. Priya will send the slides. We haven’t decided who runs QA."}
+```
+
+Example `200 OK` response
+
+```json
+{
+  "summary": "The team will ship Friday. Priya will send the slides. QA ownership is open.",
+  "decisions": ["Ship Friday."],
+  "action_items": [
+    {"task": "Send the slides.", "owner": "Priya", "deadline": null}
+  ],
+  "open_questions": ["Who will run QA?"]
+}
+```
+
+All four fields are present. Empty sections are `[]`. Each task has a plain-text description, a nullable owner and a nullable deadline. A stated deadline keeps the speaker's wording. Quick View can edit these fields and use the edited values for a local `.txt` export. Retain the transcript if the request fails.
+
+A blank transcript returns `400 Bad Request`.
+
+```json
+{"error":{"code":"invalid_request","message":"Provide the completed meeting transcript.","retryable":false}}
+```
+
+A Groq outage returns `502 Bad Gateway`.
+
+```json
+{"error":{"code":"minutes_provider_unavailable","message":"Morning couldn't prepare the meeting minutes. Please try again.","retryable":true}}
+```
+
+The same error object carries `413 request_too_large` for an oversized request, `502 minutes_provider_invalid_response` for incomplete or invalid minutes, and `504 minutes_provider_timeout` for a provider timeout. The two provider errors are retryable.
 
 ## Errors and limits
 
@@ -213,14 +363,14 @@ A Groq outage returns `502 Bad Gateway`:
 }
 ```
 
-Show `error.message` and retain the transcript. `command_id` is present when the command was parsed and its ID is valid. Token errors and errors rejected before command parsing omit it. Both endpoints return `Cache-Control: no-store`. Provider bodies, keys and transcripts are not logged.
+Show `error.message` and retain the transcript. Command errors include `command_id` when Go parsed a valid ID. All endpoints return `Cache-Control: no-store`. Go keeps provider bodies, keys and transcripts out of logs.
 
 | HTTP status | Error code | Meaning |
 | --- | --- | --- |
 | `400` | `invalid_request` | Malformed JSON, unknown fields or invalid command context. |
 | `404` | `not_found` | Endpoint is outside this milestone. |
 | `405` | `method_not_allowed` | Use POST. |
-| `413` | `request_too_large` | Token body exceeds 1 KiB or command body exceeds 16 KiB. |
+| `413` | `request_too_large` | Token body exceeds 1 KiB, speech body exceeds 2 KiB, command body exceeds 16 KiB or minutes body exceeds 64 KiB. |
 | `415` | `unsupported_media_type` | Send `application/json`. |
 | `429` | `rate_limited` | Wait for `Retry-After` before retrying. |
 | `502` | `voice_provider_unavailable`, `command_provider_unavailable` | Provider request failed. |
@@ -237,4 +387,4 @@ The custom test transport returns local `testdata/` fixtures and cannot reach li
 
 Smoke and browser E2E verification require a separately approved, manually dispatched GitHub Actions run with the cases, commit and live-provider usage stated. Backend fixture tests do not verify microphone capture, IndexedDB transactions, duplicate saves after an edit, or browser speech.
 
-The server stops at validated reminder and draft responses. Reminder edits, meeting minutes, accounts, server storage, mail delivery and speech endpoints are outside this milestone.
+The correction fixture cases cover the Friday time change, replay of the same request, missing context, vague times, invalid provider actions and malformed reminder snapshots. The backend stops at the validated response.

@@ -1,0 +1,9 @@
+{
+  "choices": [{
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "{\"actions\":[{\"type\":\"reschedule_reminder\",\"due_at\":\"2026-11-06T11:00:00+05:30\"}],\"clarification\":null,\"recipient_name\":null}"
+    }
+  }]
+}

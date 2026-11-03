@@ -1,0 +1,9 @@
+{
+  "choices": [{
+    "finish_reason": "stop",
+    "message": {
+      "role": "assistant",
+      "content": "{\"summary\":\"The team will ship Friday. Priya will send the slides. QA ownership is open.\",\"decisions\":[\"Ship Friday.\"],\"action_items\":[{\"task\":\"Send the slides.\",\"owner\":\"Priya\",\"deadline\":null,\"source\":\"Priya will send the slides.\"}],\"open_questions\":[\"Who will run QA?\"]}"
+    }
+  }]
+}
