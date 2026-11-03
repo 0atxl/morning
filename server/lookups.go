@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -194,10 +195,43 @@ func publicLookupError(err error) error {
 	if errors.Is(err, errProviderTimeout) {
 		return &lookupError{"lookup_timeout", "The lookup took too long. Your words are still available to retry.", 0, true}
 	}
+	if errors.Is(err, errProviderRateLimited) {
+		return &lookupError{"lookup_quota_limited", "The lookup provider's request limit was reached. Please try later.", 60, true}
+	}
 	if errors.Is(err, errInvalidProviderOutput) {
 		return &lookupError{"lookup_invalid_response", "The provider returned information Morning couldn't verify. Please retry.", 0, true}
 	}
 	return &lookupError{"lookup_unavailable", "The lookup is unavailable right now. Please retry.", 0, true}
+}
+
+func (a *api) answerLookup(w http.ResponseWriter, r *http.Request, request commandRequest, query lookupQuery) {
+	outcome, err := a.lookups.lookup(r.Context(), query, clientAddress(r), request.Timezone)
+	if err != nil {
+		failure, ok := publicLookupError(err).(*lookupError)
+		if !ok {
+			writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
+			return
+		}
+		status := http.StatusBadGateway
+		switch failure.Code {
+		case "lookup_timeout":
+			status = http.StatusGatewayTimeout
+		case "lookup_rate_limited", "lookup_quota_limited":
+			status = http.StatusTooManyRequests
+		case "search_not_configured", "lookup_access_denied":
+			status = http.StatusServiceUnavailable
+		}
+		if failure.RetryAfter > 0 {
+			w.Header().Set("Retry-After", strconv.Itoa(failure.RetryAfter))
+		}
+		writeError(w, status, request.CommandID, failure.Code, failure.Message, failure.Retryable)
+		return
+	}
+	response := commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Lookup: outcome.Result, LookupContext: outcome.Pending}
+	if outcome.Question != "" {
+		response.Clarification = &outcome.Question
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func emptyLookup(q lookupQuery, query, answer string) lookupOutcome {

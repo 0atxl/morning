@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,6 +25,7 @@ type commandRequest struct {
 	SelectedReminderID *string          `json:"selected_reminder_id,omitempty"`
 	DraftContext       *draftContext    `json:"draft_context,omitempty"`
 	SelectedDraftID    *string          `json:"selected_draft_id,omitempty"`
+	LookupContext      *lookupContext   `json:"lookup_context,omitempty"`
 }
 
 type draftContext struct {
@@ -66,7 +68,9 @@ type interpretation struct {
 type commandResponse struct {
 	CommandID string `json:"command_id"`
 	interpretation
-	Reply string `json:"reply,omitempty"`
+	Reply         string         `json:"reply,omitempty"`
+	Lookup        *lookupResult  `json:"lookup,omitempty"`
+	LookupContext *lookupContext `json:"lookup_context,omitempty"`
 }
 
 type tokenResponse struct {
@@ -92,6 +96,7 @@ type api struct {
 	tokens    *rateLimiter
 	commands  *rateLimiter
 	speech    *speechService
+	lookups   *lookupService
 }
 
 func newAPI(p *providers, clock func() time.Time) http.Handler {
@@ -105,6 +110,7 @@ func newAPIWithMailbox(p *providers, clock func() time.Time, mailbox *reminderMa
 		tokens:    newRateLimiter(30, 300),
 		commands:  newRateLimiter(60, 600),
 		speech:    newSpeechService(p.client.Transport),
+		lookups:   newLookupService(p, clock),
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -154,6 +160,9 @@ func (a *api) voiceToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) command(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 22*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
 	if !a.allow(w, r, a.commands) {
 		return
 	}
@@ -170,9 +179,27 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, id, "invalid_request", err.Error(), false)
 		return
 	}
+	if request.LookupContext != nil {
+		query, err := withLookupPlace(*request.LookupContext, request.Transcript)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, request.CommandID, "invalid_request", "Say a city or landmark to finish this search.", false)
+			return
+		}
+		a.answerLookup(w, r, request, query)
+		return
+	}
 	model, err := a.providers.interpret(r.Context(), request, now, location)
 	if err != nil {
 		writeProviderError(w, request.CommandID, "command", err)
+		return
+	}
+	if model.Lookup != nil {
+		if model.Actions == nil || len(model.Actions) != 0 || model.Clarification != nil || model.RecipientName != nil ||
+			request.SelectedContactID != nil || request.SelectedReminderID != nil || request.SelectedDraftID != nil || validateLookup(*model.Lookup) != nil {
+			writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
+			return
+		}
+		a.answerLookup(w, r, request, *model.Lookup)
 		return
 	}
 	result := interpretation{Actions: model.Actions, Clarification: model.Clarification}
