@@ -10,6 +10,44 @@ import (
 )
 
 // Offline fixture definitions. Transport stubs intercept every provider request.
+func TestReplyLanguageUsesCurrentCommandRatherThanNamesOrQuotedContent(t *testing.T) {
+	for _, tc := range []struct{ transcript, want string }{
+		{"Write up a mail to Priya saying that I need slides for the morning meeting.", ""},
+		{"Hi, draft Priya an email.", ""},
+		{"What's the weather in Pune, Maharashtra, India?", ""},
+		{"Draft Priya an email in Hindi asking for slides.", ""},
+		{`Draft Priya an email saying "मुझे स्लाइड चाहिए".`, ""},
+		{"Priya ko email likho ki mujhe slides chahiye.", "hi"},
+		{"Pune mein abhi mausam kaisa hai?", "hi"},
+		{"Pune ka mausam batao.", "hi"},
+		{"मुझे दस मिनट में पानी पीने की याद दिलाना", "hi"},
+		{"उसे ग्यारह बजे कर दो", "hi"},
+	} {
+		if got := replyLanguage(tc.transcript); got != tc.want {
+			t.Errorf("%q: got %q, want %q", tc.transcript, got, tc.want)
+		}
+	}
+}
+
+func TestEnglishDraftIgnoresUnsupportedHindiModelFlag(t *testing.T) {
+	request := draftRequest()
+	request.Transcript = "Write up a mail to Priya saying that I need slides for the morning meeting."
+	request.DraftContext = &draftContext{ID: "draft:earlier", Subject: "पुराना ड्राफ्ट", Body: "मीटिंग की जानकारी", Recipient: "Priya", To: "priya.shah@example.com"}
+	handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
+		var payload struct{ Messages []struct{ Content string } }
+		if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || !strings.Contains(payload.Messages[0].Content, "For this turn, the response language is English.") {
+			t.Fatal("English generation must be explicit on the current turn")
+		}
+		name := "Priya"
+		return lookupIntentResponse(modelInterpretation{ReplyLanguage: "hi", RecipientName: &name, Actions: []action{{Type: "draft_email", ToContactID: "priya-shah", Subject: "Slides for the morning meeting", Body: "Hi Priya,\n\nPlease share the slides for the morning meeting.\n\nThanks!"}}}), nil
+	})
+	status, body := requestCommand(t, handler, request)
+	var result commandResponse
+	if json.Unmarshal([]byte(body), &result) != nil || status != 200 || len(result.Actions) != 1 || result.Actions[0].Type != "draft_email" || result.ReplyLanguage != "" || strings.Contains(body, "reply_language") {
+		t.Fatalf("English draft must use the English confirmation despite provider drift: %d %s", status, body)
+	}
+}
+
 func TestHindiAndHinglishReminderEnvelope(t *testing.T) {
 	for _, transcript := range []string{"मुझे दस मिनट में पानी पीने की याद दिलाना", "mujhe dus minute mein paani peene ki yaad dilana"} {
 		handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
