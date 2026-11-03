@@ -4,7 +4,7 @@ The browser streams microphone audio directly to Deepgram, then sends the comple
 
 The browser commits actions to IndexedDB using `command_id` to prevent duplicate saves. After a new save, it can request a short spoken confirmation from the optional speech endpoint. The existing browser voice provides a fallback. Drafts stay editable and unsent.
 
-A calendar command returns one event for a client to preview and export. The shipped dashboard currently consumes reminder creation and email-draft actions only. Reminder corrections, calendar `.ics` download, meeting minutes and ElevenLabs playback still need browser integration. The endpoint examples below describe the backend contracts.
+A calendar command returns one event for a client to preview and export. The shipped dashboard supports reminders, email drafts, corrections, read-only lookups and spoken replies. Reminder Quick View can export a calendar entry. Recording meeting minutes and scheduling calendar events still need browser integration. The endpoint examples below describe the backend contracts.
 
 ## Local startup
 
@@ -52,7 +52,7 @@ The included Vite development server proxies `/api` to `http://127.0.0.1:8080`. 
 {
   "access_token": "<temporary Deepgram JWT>",
   "expires_in": 30,
-  "websocket_url": "wss://api.deepgram.com/v1/listen?model=nova-3&language=en-US&interim_results=true&smart_format=true"
+  "websocket_url": "wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&language_hint=en&language_hint=hi&interim_results=true&smart_format=true"
 }
 ```
 
@@ -61,6 +61,10 @@ After mic permission is granted and audio capture is ready, request a token and 
 ```js
 const socket = new WebSocket(result.websocket_url, ["bearer", result.access_token]);
 ```
+
+[Nova-3 multilingual mode](https://developers.deepgram.com/docs/nova-3-language-prompting) accepts English, Hindi and mixed speech on this connection. Hints bias recognition toward English and Hindi. No additional key or language selector is needed. Groq identifies the reply language in its existing structured command response. Go validates it and emits optional `reply_language: "hi"` for Hindi/Hinglish responses; omission means English. Pending `lookup_context` also carries that language, so a city-name reply finishes the original search in Hindi.
+
+The browser saves the reply language with a lookup snapshot for History and Play reply. Weather and time use Hindi templates. Search evidence keeps original titles, quotes and links; the existing evidence-selection call can translate its supported answer into Hindi without another tool call. Contact matching remains exact across scripts rather than guessing transliterations.
 
 Use the `bearer` subprotocol for the temporary JWT. Never send the permanent server key to the browser or put a token in a URL. [Deepgram's browser transport uses this authentication scheme](https://github.com/deepgram/deepgram-js-sdk/blob/v4.9.1/src/packages/AbstractLiveClient.ts).
 
@@ -311,7 +315,7 @@ If either setting is missing, the endpoint returns `503 speech_not_configured`. 
 
 **Dashboard integration.** In the post-commit speech helper, try the MP3 first and use the existing browser voice if the request or playback fails. A replayed command stays silent. **Retry speech** uses the saved confirmation alone. It must never submit a command or write to IndexedDB.
 
-Send one JSON object with only `text`, a single line of 1 to 240 Unicode characters without surrounding whitespace. The request body is limited to 2 KiB and returned audio to 1 MiB. Speech has its own allowance of 60 requests per client IP and 600 per server process per UTC minute.
+Send one JSON object with `text`, a single line of 1 to 240 Unicode characters without surrounding whitespace, and optional `language` (`en` or `hi`). Hindi requests include `language_code: "hi"` in the existing Flash v2.5 call. Browser fallback sets `hi-IN` and prefers an installed Hindi voice. It cannot install voices. The request body is limited to 2 KiB and returned audio to 1 MiB. Speech has its own allowance of 60 requests per client IP and 600 per server process per UTC minute.
 
 ## Meeting minutes
 

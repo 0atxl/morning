@@ -22,10 +22,11 @@ const (
 // Groq may propose only these arguments. It never supplies facts, URLs, a clock,
 // coordinates or tool names. Keep lookups separate from write actions.
 type lookupQuery struct {
-	Kind  string `json:"kind"`
-	Terms string `json:"terms"`
-	Place string `json:"place"`
-	Today bool   `json:"today"`
+	Kind          string `json:"kind"`
+	Terms         string `json:"terms"`
+	Place         string `json:"place"`
+	Today         bool   `json:"today"`
+	ReplyLanguage string `json:"-"` // Go-owned; never a search argument.
 }
 
 type lookupSource struct {
@@ -61,7 +62,8 @@ type lookupOutcome struct {
 type lookupContext struct {
 	Query lookupQuery `json:"query"`
 	// Only an ambiguous city needs a region/country appended to the reply.
-	City string `json:"city,omitempty"`
+	City          string `json:"city,omitempty"`
+	ReplyLanguage string `json:"reply_language,omitempty"`
 }
 
 type lookupError struct {
@@ -133,6 +135,7 @@ func withLookupPlace(pending lookupContext, spokenPlace string) (lookupQuery, er
 		}
 	}
 	pending.Query.Place = spokenPlace
+	pending.Query.ReplyLanguage = pending.ReplyLanguage
 	if err := validateLookup(pending.Query); err != nil {
 		return lookupQuery{}, err
 	}
@@ -171,17 +174,23 @@ func (s *lookupService) lookup(ctx context.Context, q lookupQuery, visitor, time
 	}
 	if outcome.Result != nil {
 		outcome.Result.LookedUpAt = s.clock().UTC().Format(time.RFC3339)
+		if q.ReplyLanguage == "hi" {
+			outcome.Result.Speech = hindiLookupMessage(outcome.Result.Speech)
+		}
 	}
 	return outcome, nil
 }
 
 func lookupQuestion(q lookupQuery, question string) lookupOutcome {
-	return lookupOutcome{Question: question, Pending: &lookupContext{Query: q}}
+	if q.ReplyLanguage == "hi" {
+		question = hindiQuestion(question)
+	}
+	return lookupOutcome{Question: question, Pending: &lookupContext{Query: q, ReplyLanguage: q.ReplyLanguage}}
 }
 
 func missingLookupPlace(place string) bool {
 	switch strings.ToLower(strings.Trim(strings.TrimSpace(place), ".?!")) {
-	case "", "near me", "me", "here", "my location", "nearby", "current location":
+	case "", "near me", "me", "here", "my location", "nearby", "current location", "मेरे पास", "आसपास", "मेरी लोकेशन", "mere paas", "aas paas":
 		return true
 	}
 	return false
@@ -227,7 +236,7 @@ func (a *api) answerLookup(w http.ResponseWriter, r *http.Request, request comma
 		writeError(w, status, request.CommandID, failure.Code, failure.Message, failure.Retryable)
 		return
 	}
-	response := commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Lookup: outcome.Result, LookupContext: outcome.Pending}
+	response := commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Lookup: outcome.Result, LookupContext: outcome.Pending, ReplyLanguage: query.ReplyLanguage}
 	if outcome.Question != "" {
 		response.Clarification = &outcome.Question
 	}
@@ -235,6 +244,9 @@ func (a *api) answerLookup(w http.ResponseWriter, r *http.Request, request comma
 }
 
 func emptyLookup(q lookupQuery, query, answer string) lookupOutcome {
+	if q.ReplyLanguage == "hi" {
+		answer = hindiLookupMessage(answer)
+	}
 	return lookupOutcome{Result: &lookupResult{Kind: q.Kind, Query: query, Status: "empty", Answer: answer, Speech: answer, Sources: []lookupSource{}}}
 }
 

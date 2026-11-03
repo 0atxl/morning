@@ -74,7 +74,8 @@ func (a *api) speak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Text string `json:"text"`
+		Text     string `json:"text"`
+		Language string `json:"language,omitempty"`
 	}
 	if !readJSON(w, r, &request, maxSpeechBody) {
 		return
@@ -83,12 +84,16 @@ func (a *api) speak(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "", "invalid_request", "Send a single-line confirmation of 1 to 240 characters without surrounding whitespace.", false)
 		return
 	}
+	if request.Language != "" && request.Language != "en" && request.Language != "hi" {
+		writeError(w, http.StatusBadRequest, "", "invalid_request", "Speech language must be en or hi.", false)
+		return
+	}
 	if a.speech.key == "" || a.speech.voiceID == "" {
 		writeError(w, http.StatusServiceUnavailable, "", "speech_not_configured", "The ElevenLabs voice is not configured.", false)
 		return
 	}
 
-	audio, err := a.speech.synthesize(r.Context(), request.Text)
+	audio, err := a.speech.synthesize(r.Context(), request.Text, request.Language)
 	if err != nil {
 		// synthesize returns only fixed errors or a numeric HTTP status. The
 		// proxy can replace a 502 body, so keep the stage in the service log.
@@ -107,8 +112,12 @@ func (a *api) speak(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(audio)
 }
 
-func (s *speechService) synthesize(ctx context.Context, text string) ([]byte, error) {
-	body, _ := json.Marshal(map[string]string{"text": text, "model_id": "eleven_flash_v2_5"})
+func (s *speechService) synthesize(ctx context.Context, text, language string) ([]byte, error) {
+	payload := map[string]string{"text": text, "model_id": "eleven_flash_v2_5"}
+	if language == "hi" {
+		payload["language_code"] = "hi"
+	}
+	body, _ := json.Marshal(payload)
 	endpoint := "https://api.elevenlabs.io/v1/text-to-speech/" + url.PathEscape(s.voiceID) + "?output_format=mp3_44100_128"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {

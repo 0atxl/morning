@@ -51,6 +51,7 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 	if request.LookupContext != nil {
 		pending := request.LookupContext
 		if validateLookup(pending.Query) != nil || (pending.Query.Kind != "hotels" && pending.Query.Kind != "weather" && pending.Query.Kind != "time") ||
+			(pending.ReplyLanguage != "" && pending.ReplyLanguage != "en" && pending.ReplyLanguage != "hi") ||
 			(pending.City != "" && !validText(pending.City, 100)) || len(request.Contacts) > 0 || request.SelectedContactID != nil ||
 			request.ReminderContext != nil || request.SelectedReminderID != nil || request.DraftContext != nil || request.SelectedDraftID != nil {
 			return time.Time{}, nil, errors.New("lookup_context must contain only a pending place lookup, without action context.")
@@ -217,6 +218,7 @@ var (
 	reminderThenDraft = regexp.MustCompile(`(?is)^\s*(?:please\s+)?remind\s+me\b.*\band\s+(?:also\s+)?(?:please\s+)?(?:draft|write|compose)\b.*\be-?mail\b`)
 	scheduleLead      = regexp.MustCompile(spokenPrefix + `(?:schedule|book)\b`)
 	reminderLead      = regexp.MustCompile(spokenPrefix + `(?:remind\s+me|(?:set|create|schedule)\s+(?:me\s+)?(?:(?:a|an|my)\s+)?(?:reminder|alert))\b`)
+	hindiCompound     = regexp.MustCompile(`(?is)(?:(?:ईमेल|इमेल|e-?mail).*?(?:और|\baur\b).*?(?:याद\s+दिला|yaad\s+dila)|(?:याद\s+दिला|yaad\s+dila).*?(?:और|\baur\b).*?(?:ईमेल|इमेल|e-?mail))`)
 )
 
 // Check calendar intent before reminder and contact resolution can turn a misclassified
@@ -226,7 +228,7 @@ func validateCalendarCommand(result *interpretation, transcript string) error {
 		return nil
 	}
 	isEvent := result.Actions[0].Type == "create_calendar_event"
-	wantsReminder := reminderLead.MatchString(transcript)
+	wantsReminder := reminderLead.MatchString(transcript) || hindiReminder.MatchString(unquotedCommand(transcript))
 	if isEvent && (wantsReminder || newCommandLead.MatchString(transcript)) {
 		return errors.New("a reminder or draft request cannot create a calendar event")
 	}
@@ -258,7 +260,7 @@ func validateCommandCompleteness(result interpretation, transcript string) error
 		return nil
 	}
 	command := unquotedCommand(transcript)
-	if !draftThenReminder.MatchString(command) && !reminderThenDraft.MatchString(command) {
+	if !draftThenReminder.MatchString(command) && !reminderThenDraft.MatchString(command) && !hindiCompound.MatchString(command) {
 		return nil
 	}
 	var draft, reminder bool
