@@ -1,3 +1,5 @@
+import type { LookupResult } from "./lookup-result.ts";
+
 type ResultBase = {
   id: string;
   title: string;
@@ -19,8 +21,14 @@ export type DraftResult = ResultBase & {
   body: string;
 };
 
+export type LookupWorkspaceResult = ResultBase & {
+  kind: "lookup";
+  lookup: LookupResult;
+};
+
 // Browser presentation types. These are not the server's command response.
-export type WorkspaceResult = ReminderResult | DraftResult;
+export type WorkspaceResult =
+  ReminderResult | DraftResult | LookupWorkspaceResult;
 
 export function gmailComposeUrl(draft: DraftResult) {
   const query = new URLSearchParams({
@@ -132,6 +140,21 @@ export function formatDue(reminder: ReminderResult, full = false) {
 }
 
 export function resultText(result: WorkspaceResult) {
+  if (result.kind === "lookup") {
+    const lookup = result.lookup;
+    return [
+      lookup.answer,
+      `Looked up: ${lookup.looked_up_at}`,
+      ...(lookup.data_time
+        ? [`Data time: ${lookup.data_time} (${lookup.timezone})`]
+        : []),
+      ...lookup.sources.map(
+        (source) =>
+          `${source.title}\n${source.publisher}${source.published_at ? ` · Published: ${source.published_at}` : ""}\n${source.url}`,
+      ),
+      `Transcript\n${result.transcript}`,
+    ].join("\n\n");
+  }
   if (result.kind === "draft") {
     return `To: ${result.to}\nSubject: ${result.subject}\n\n${result.body}`;
   }

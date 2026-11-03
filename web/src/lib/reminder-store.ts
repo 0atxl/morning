@@ -1,6 +1,11 @@
 import { ownerKey, type MailSchedule } from "./reminder-alerts.ts";
 import type { CommandAction, CommandRequest } from "./command-api.ts";
 import {
+  parseLookupResult,
+  type LookupContext,
+  type LookupResult,
+} from "./lookup-result.ts";
+import {
   EXAMPLE_CONTACTS,
   validateContact,
   type GuestContact,
@@ -9,6 +14,7 @@ import type {
   DraftResult,
   ReminderResult,
   WorkspaceResult,
+  LookupWorkspaceResult,
 } from "./results.ts";
 
 export type Session = { id: string; createdAt: string };
@@ -18,6 +24,8 @@ export type Turn = {
   transcript: string;
   createdAt: string;
   reply?: string;
+  lookup?: LookupResult;
+  lookupContext?: LookupContext;
 };
 export const earlierActivity = "earlier-activity";
 
@@ -33,6 +41,7 @@ type SavedMetadata = {
 export type StoredReminder = ReminderResult &
   SavedMetadata & { mailRevision?: number };
 export type StoredDraft = DraftResult & SavedMetadata & { contactId: string };
+export type StoredLookup = LookupWorkspaceResult & SavedMetadata;
 export type StoredResult = StoredReminder | StoredDraft;
 type Receipt = { commandId: string; reminderId?: string; draftId?: string };
 export type CommitResult = { records: StoredResult[]; created: boolean };
@@ -189,6 +198,59 @@ export async function selectWorkspaceSession(id?: string) {
 
 export async function storeTurn(turn: Turn) {
   await writeWorkspace(["turns"], (tx) => tx.objectStore("turns").put(turn));
+}
+
+// The turn itself is the lookup receipt. Answer, sources, lookup time and reply
+// commit together, independently of reminder and draft stores.
+export async function commitLookup(turn: Turn, snapshot: LookupResult) {
+  const lookup = parseLookupResult(snapshot);
+  let saved: Turn | undefined;
+  let created = false;
+  await writeWorkspace(["turns"], (tx) => {
+    const store = tx.objectStore("turns");
+    const read = store.get(turn.id);
+    read.onsuccess = () => {
+      const original = read.result as Turn | undefined;
+      if (
+        !original ||
+        original.sessionId !== turn.sessionId ||
+        original.transcript !== turn.transcript
+      ) {
+        tx.abort();
+        return;
+      }
+      if (original.lookup) {
+        saved = original;
+        return;
+      }
+      saved = { ...original, reply: lookup.answer, lookup };
+      delete saved.lookupContext;
+      try {
+        store.put(saved);
+      } catch {
+        saved = undefined;
+        tx.abort();
+        return;
+      }
+      created = true;
+    };
+  });
+  if (!saved) throw storageError();
+  return { turn: saved, created };
+}
+
+export function lookupRecord(turn: Turn): StoredLookup | null {
+  if (!turn.lookup) return null;
+  return {
+    id: `lookup:${turn.id}`,
+    commandId: turn.id,
+    sessionId: turn.sessionId,
+    createdAt: turn.createdAt,
+    transcript: turn.transcript,
+    kind: "lookup",
+    title: turn.lookup.query,
+    lookup: turn.lookup,
+  };
 }
 
 export function recordsForCommand(
@@ -450,6 +512,10 @@ export async function commitCommand(
 export async function updateResult(
   result: WorkspaceResult,
 ): Promise<StoredResult> {
+  if (result.kind === "lookup")
+    throw new Error(
+      "A saved lookup is read-only. Record a new question for fresh information.",
+    );
   const db = await openStore();
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction;

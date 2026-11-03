@@ -17,6 +17,43 @@ export type LookupSource = {
 
 export type LookupContext = { query: LookupQuery; city?: string };
 
+export function parseLookupContext(data: unknown): LookupContext {
+  const value = object(data);
+  const query = object(value?.query);
+  if (
+    !value ||
+    !onlyKeys(value, ["query", "city"]) ||
+    !query ||
+    !onlyKeys(query, ["kind", "terms", "place", "today"]) ||
+    typeof query.kind !== "string" ||
+    !["hotels", "weather", "time"].includes(query.kind) ||
+    query.terms !== "" ||
+    query.today !== false ||
+    (query.place !== "" && !text(query.place, 120)) ||
+    (value.city !== undefined && !text(value.city, 100))
+  )
+    invalid();
+  return {
+    query: {
+      kind: query.kind as LookupQuery["kind"],
+      terms: "",
+      place: query.place as string,
+      today: false,
+    },
+    ...(value.city === undefined ? {} : { city: value.city as string }),
+  };
+}
+
+// Progress copy only. Go/Groq still own intent classification and validation.
+export function lookupProgress(transcript: string, context?: LookupContext) {
+  return (
+    Boolean(context) ||
+    /\b(?:weather|hotels?|headlines?|news|search|look\s+up)\b|\b(?:latest|stable)\b.*\b(?:release|version)\b|\bwhat(?:'s|\s+is)?\s+(?:the\s+)?time\b/i.test(
+      transcript,
+    )
+  );
+}
+
 // Store the entire snapshot in its originating conversation. History and Play
 // reply read it locally. Only an explicit retry submits another lookup.
 export type LookupResult = {
