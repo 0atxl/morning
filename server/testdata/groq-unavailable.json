@@ -1,0 +1,6 @@
+{
+  "error": {
+    "type": "service_unavailable",
+    "message": "Synthetic provider outage. This response must stay on the server."
+  }
+}

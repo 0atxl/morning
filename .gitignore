@@ -1,0 +1,37 @@
+# Local development instructions, skills, plans and research
+/Agent Docs/
+/AGENTS.md
+/.agents/
+/.codex/
+
+# Local credentials and machine-specific settings
+.env
+.env.*
+!.env.example
+!.env.sample
+/.aws/
+/.azure/
+/.ssh/
+/.gnupg/
+/.config/gcloud/
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+service-account*.json
+
+# Generated artifacts; dependency manifests and lockfiles belong in Git
+node_modules/
+dist/
+build/
+bin/
+.cache/
+.vite/
+coverage/
+playwright-report/
+test-results/
+*.test
+*.out
+*.exe
+/server/server

@@ -1,0 +1,12 @@
+{
+  "id": "fixture-reminder",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"actions\":[{\"type\":\"create_reminder\",\"title\":\"Check the oven\",\"due_at\":\"2026-11-03T09:10:00+05:30\"}],\"clarification\":null}"
+      }
+    }
+  ]
+}

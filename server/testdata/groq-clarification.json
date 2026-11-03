@@ -1,0 +1,12 @@
+{
+  "id": "fixture-clarification",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": "{\"actions\":[],\"clarification\":\"When should I remind you to check the oven?\"}"
+      }
+    }
+  ]
+}
