@@ -189,54 +189,46 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		a.answerLookup(w, r, request, query)
 		return
 	}
-	model, err := a.providers.interpret(r.Context(), request, now, location)
-	if err != nil {
-		writeProviderError(w, request.CommandID, "command", err)
+	var model modelInterpretation
+	var result interpretation
+	feedback := ""
+	for attempt := 0; attempt < 2; attempt++ {
+		model, err = a.providers.interpret(r.Context(), request, now, location, feedback)
+		stage := "provider_response"
+		invalid := errors.Is(err, errInvalidProviderOutput)
+		if err == nil {
+			result, stage, err = validateCommandModel(model, request, now, location)
+			invalid = err != nil && !errors.Is(err, errInvalidSelection)
+		}
+		if err == nil {
+			break
+		}
+		if errors.Is(err, errInvalidSelection) {
+			writeError(w, http.StatusBadRequest, request.CommandID, "invalid_request", err.Error(), false)
+			return
+		}
+		if !invalid {
+			// Rate limits, outages and timeouts never cause a second provider call.
+			writeProviderError(w, request.CommandID, "command", err)
+			return
+		}
+		// These reasons come only from fixed server validation messages. Never log
+		// the model response, transcript, contact values or provider response body.
+		feedback = stage + ": " + err.Error()
+		log.Printf("command output rejected: command_id=%s stage=%s reason=%s attempt=%d", request.CommandID, stage, err.Error(), attempt+1)
+		if ctx.Err() != nil {
+			writeProviderError(w, request.CommandID, "command", errProviderTimeout)
+			return
+		}
+		if attempt == 0 {
+			continue
+		}
+		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 		return
 	}
 	if model.Lookup != nil {
-		if model.Actions == nil || len(model.Actions) != 0 || model.Clarification != nil || model.RecipientName != nil ||
-			request.SelectedContactID != nil || request.SelectedReminderID != nil || request.SelectedDraftID != nil || validateLookup(*model.Lookup) != nil {
-			writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
-			return
-		}
 		model.Lookup.ReplyLanguage = replyLanguage(request.Transcript)
 		a.answerLookup(w, r, request, *model.Lookup)
-		return
-	}
-	result := interpretation{Actions: model.Actions, Clarification: model.Clarification}
-	if validateInterpretation(&result, now, location) != nil || validateCalendarCommand(&result, request.Transcript) != nil {
-		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
-		return
-	}
-	result, err = resolveCorrection(result, request, location)
-	if err != nil {
-		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
-		return
-	}
-	result, err = resolveContact(result, model.RecipientName, request)
-	if errors.Is(err, errInvalidSelection) {
-		writeError(w, http.StatusBadRequest, request.CommandID, "invalid_request", err.Error(), false)
-		return
-	}
-	if err != nil {
-		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
-		return
-	}
-	if len(result.Actions) == 1 && result.Actions[0].Type == "update_draft" {
-		if request.DraftContext == nil {
-			question := "Which draft should I update?"
-			result = interpretation{Actions: []action{}, Clarification: &question}
-		} else {
-			result.Actions[0].DraftID = request.DraftContext.ID
-		}
-	}
-	if len(result.Actions) > 0 && ((request.SelectedReminderID != nil && result.Actions[0].Type != "reschedule_reminder") || (request.SelectedDraftID != nil && result.Actions[0].Type != "update_draft")) {
-		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
-		return
-	}
-	if err := validateCommandCompleteness(result, request.Transcript); err != nil {
-		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 		return
 	}
 	if len(result.Actions) == 1 && result.Actions[0].Type == "reply" {
@@ -249,6 +241,49 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		result.Clarification = &question
 	}
 	writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: result, ReplyLanguage: language})
+}
+
+// Every generation attempt passes the same validation before lookup execution
+// or a proposed write reaches the browser. Stage names are safe diagnostics.
+func validateCommandModel(model modelInterpretation, request commandRequest, now time.Time, location *time.Location) (interpretation, string, error) {
+	result := interpretation{Actions: model.Actions, Clarification: model.Clarification}
+	if model.Lookup != nil {
+		if model.Actions == nil || len(model.Actions) != 0 || model.Clarification != nil || model.RecipientName != nil ||
+			request.SelectedContactID != nil || request.SelectedReminderID != nil || request.SelectedDraftID != nil {
+			return result, "lookup_action_boundary", errInvalidProviderOutput
+		}
+		return result, "lookup_fields", validateLookup(*model.Lookup)
+	}
+	if err := validateInterpretation(&result, now, location); err != nil {
+		return result, "action_fields", err
+	}
+	if err := validateCalendarCommand(&result, request.Transcript); err != nil {
+		return result, "calendar_intent", err
+	}
+	var err error
+	result, err = resolveCorrection(result, request, location)
+	if err != nil {
+		return result, "reminder_correction", err
+	}
+	result, err = resolveContact(result, model.RecipientName, request)
+	if err != nil {
+		return result, "contact_resolution", err
+	}
+	if len(result.Actions) == 1 && result.Actions[0].Type == "update_draft" {
+		if request.DraftContext == nil {
+			question := "Which draft should I update?"
+			result = interpretation{Actions: []action{}, Clarification: &question}
+		} else {
+			result.Actions[0].DraftID = request.DraftContext.ID
+		}
+	}
+	if len(result.Actions) > 0 && ((request.SelectedReminderID != nil && result.Actions[0].Type != "reschedule_reminder") || (request.SelectedDraftID != nil && result.Actions[0].Type != "update_draft")) {
+		return result, "selected_item_action", errInvalidProviderOutput
+	}
+	if err := validateCommandCompleteness(result, request.Transcript); err != nil {
+		return result, "command_completeness", err
+	}
+	return result, "", nil
 }
 
 func (a *api) allow(w http.ResponseWriter, r *http.Request, limiter *rateLimiter) bool {
@@ -313,6 +348,12 @@ func writeProviderError(w http.ResponseWriter, id, stage string, err error) {
 	} else if errors.Is(err, errInvalidProviderOutput) {
 		code = stage + "_provider_invalid_response"
 		message = "Morning received an invalid response. Please try again."
+		if stage == "command" {
+			// This is an application validation failure, not a broken gateway.
+			// A 422 preserves our JSON message through Cloudflare's 502 pages.
+			status = http.StatusUnprocessableEntity
+			message = "Morning couldn't interpret that reliably. Please rephrase or retry."
+		}
 	} else if errors.Is(err, errProviderTimeout) {
 		status = http.StatusGatewayTimeout
 		code = stage + "_provider_timeout"

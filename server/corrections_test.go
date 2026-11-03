@@ -91,7 +91,7 @@ func TestUnsafeCorrectionRejected(t *testing.T) {
 			})
 			w := requestAPI(handler, "/api/commands", correctionRequest)
 			var got apiError
-			if err := decodeObject(w.Body.Bytes(), &got); err != nil || w.Code != 502 || got.Error.Code != "command_provider_invalid_response" {
+			if err := decodeObject(w.Body.Bytes(), &got); err != nil || w.Code != 422 || got.Error.Code != "command_provider_invalid_response" {
 				t.Fatalf("unsafe correction escaped validation: %d %s", w.Code, w.Body)
 			}
 		})
@@ -105,7 +105,7 @@ func TestSavedContextDoesNotTurnNewReminderIntoCorrection(t *testing.T) {
 		status  int
 	}{
 		{"groq-reminder.json", 200},
-		{"groq-reschedule.json", 502},
+		{"groq-reschedule.json", 422},
 	} {
 		handler := fixtureAPI(t, func(*http.Request) (*http.Response, error) {
 			return providerResponse(200, fixture(t, tc.fixture)), nil

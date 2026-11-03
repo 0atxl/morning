@@ -291,7 +291,7 @@ func TestInvalidDraftOutputRejectsWholeCommand(t *testing.T) {
 				return providerResponse(200, string(response)), nil
 			})
 			status, body := requestCommand(t, handler, request)
-			if status != 502 || !strings.Contains(body, "command_provider_invalid_response") || strings.Contains(body, `"actions"`) {
+			if status != 422 || !strings.Contains(body, "command_provider_invalid_response") || strings.Contains(body, `"actions"`) {
 				t.Fatalf("invalid output escaped validation: %d %s", status, body)
 			}
 		})
@@ -316,7 +316,7 @@ func TestCompoundCommandRejectsEitherMissingHalf(t *testing.T) {
 				if err := decodeObject([]byte(body), &result); err != nil {
 					t.Fatalf("incomplete response exposed executable fields: %s", body)
 				}
-				if status != 502 || result.CommandID != request.CommandID || result.Error.Code != "command_provider_invalid_response" {
+				if status != 422 || result.CommandID != request.CommandID || result.Error.Code != "command_provider_invalid_response" {
 					t.Fatalf("incomplete compound command was accepted: %d %s", status, body)
 				}
 			})

@@ -144,7 +144,7 @@ func TestLookupCommandRejectsMixedAndInvalidModelIntentsBeforeRetrieval(t *testi
 			return lookupIntentResponse(model), nil
 		})
 		w := requestAPI(handler, "/api/commands", fixtureCommand)
-		if w.Code != 502 || !strings.Contains(w.Body.String(), "command_provider_invalid_response") {
+		if w.Code != 422 || !strings.Contains(w.Body.String(), "command_provider_invalid_response") {
 			t.Fatalf("mixed lookup escaped: %d %s", w.Code, w.Body.String())
 		}
 	}

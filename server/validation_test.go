@@ -47,7 +47,7 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 				return providerResponse(200, string(envelope)), nil
 			})
 			w := requestAPI(handler, "/api/commands", fixtureCommand)
-			if w.Code != 502 || !strings.Contains(w.Body.String(), `"code":"command_provider_invalid_response"`) || strings.Contains(w.Body.String(), `"actions"`) {
+			if w.Code != 422 || !strings.Contains(w.Body.String(), `"code":"command_provider_invalid_response"`) || strings.Contains(w.Body.String(), `"actions"`) {
 				t.Fatalf("invalid model output escaped validation: %d %s", w.Code, w.Body.String())
 			}
 		})
@@ -65,7 +65,7 @@ func TestRejectsIncompleteOrRefusedProviderCompletions(t *testing.T) {
 			return providerResponse(200, body), nil
 		})
 		w := requestAPI(handler, "/api/commands", fixtureCommand)
-		if w.Code != 502 || !strings.Contains(w.Body.String(), "command_provider_invalid_response") {
+		if w.Code != 422 || !strings.Contains(w.Body.String(), "command_provider_invalid_response") {
 			t.Fatalf("incomplete response was accepted: %d %s", w.Code, w.Body.String())
 		}
 	}

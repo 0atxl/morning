@@ -71,15 +71,15 @@ func TestCalendarIsDistinctFromReminder(t *testing.T) {
 		wantStatus             int
 	}{
 		{reminder, reminderFixture, 200},
-		{reminder, fixture(t, "groq-calendar-review.json"), 502},
-		{calendarTranscript, reminderFixture, 502},
+		{reminder, fixture(t, "groq-calendar-review.json"), 422},
+		{calendarTranscript, reminderFixture, 422},
 	} {
 		handler := fixtureAPI(t, func(*http.Request) (*http.Response, error) {
 			return providerResponse(200, tc.completion), nil
 		})
 		status, body := requestCommand(t, handler, calendarRequest(tc.transcript))
 		if status != tc.wantStatus || status == 200 && !strings.Contains(body, `"type":"create_reminder"`) ||
-			status == 502 && (strings.Contains(body, `"actions"`) || !strings.Contains(body, "command_provider_invalid_response")) {
+			status == 422 && (strings.Contains(body, `"actions"`) || !strings.Contains(body, "command_provider_invalid_response")) {
 			t.Fatalf("incorrect scheduling intent for %q: %d %s", tc.transcript, status, body)
 		}
 	}
@@ -104,7 +104,7 @@ func TestInvalidCalendarOutput(t *testing.T) {
 			})
 			status, body := requestCommand(t, handler, calendarRequest(calendarTranscript))
 			var reply apiError
-			if err := decodeObject([]byte(body), &reply); err != nil || status != 502 || reply.Error.Code != "command_provider_invalid_response" {
+			if err := decodeObject([]byte(body), &reply); err != nil || status != 422 || reply.Error.Code != "command_provider_invalid_response" {
 				t.Fatalf("invalid calendar action accepted: %d %s", status, body)
 			}
 		})

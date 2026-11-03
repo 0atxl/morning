@@ -163,10 +163,10 @@ func TestProviderFailuresAreDisplayableAndRedacted(t *testing.T) {
 		{"deepgram outage", "/api/voice/token", `{}`, "voice_provider_unavailable", 502, func(*http.Request) (*http.Response, error) {
 			return providerResponse(403, `{"message":"fixture-permanent-deepgram-key"}`), nil
 		}},
-		{"malformed Groq body", "/api/commands", fixtureCommand, "command_provider_invalid_response", 502, func(*http.Request) (*http.Response, error) {
+		{"malformed Groq body", "/api/commands", fixtureCommand, "command_provider_invalid_response", 422, func(*http.Request) (*http.Response, error) {
 			return providerResponse(200, `{not JSON}`), nil
 		}},
-		{"oversized Groq body", "/api/commands", fixtureCommand, "command_provider_invalid_response", 502, func(*http.Request) (*http.Response, error) {
+		{"oversized Groq body", "/api/commands", fixtureCommand, "command_provider_invalid_response", 422, func(*http.Request) (*http.Response, error) {
 			return providerResponse(200, strings.Repeat("x", maxProviderBody+1)), nil
 		}},
 	} {

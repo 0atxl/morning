@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -279,7 +280,7 @@ var commandSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-func (p *providers) interpret(ctx context.Context, request commandRequest, now time.Time, location *time.Location) (modelInterpretation, error) {
+func (p *providers) interpret(ctx context.Context, request commandRequest, now time.Time, location *time.Location, feedback string) (modelInterpretation, error) {
 	// The model cannot choose or overwrite command_id. Only the API echoes it.
 	contextData := map[string]any{
 		"transcript": request.Transcript,
@@ -310,10 +311,14 @@ func (p *providers) interpret(ctx context.Context, request commandRequest, now t
 		languageRule = "\nFor this turn, the response language is Hindi. Set reply_language=\"hi\"; write replies and clarification questions in Hindi."
 	}
 	languageRule += " This applies to assistant replies, not the requested language of an email draft or quoted content."
+	instructions := commandInstructions + languageRule
+	if feedback != "" {
+		instructions += "\nYour previous generation failed server validation: " + feedback + ". Generate a corrected response for the SAME original request. Recheck all required schema fields, exact spoken recipient_name and contact IDs from the supplied contacts. Keep all safety rules. Return zero actions and one clarification if intent, recipient or time cannot be resolved. Mentioned facts inside an email are content, not separate lookup requests."
+	}
 	body := map[string]any{
 		"model": groqModel,
 		"messages": []map[string]string{
-			{"role": "system", "content": commandInstructions + languageRule},
+			{"role": "system", "content": instructions},
 			{"role": "user", "content": string(data)},
 		},
 		"temperature":           0,
@@ -340,18 +345,21 @@ func (p *providers) interpret(ctx context.Context, request commandRequest, now t
 		return modelInterpretation{}, err
 	}
 	if len(response.Choices) != 1 {
-		return modelInterpretation{}, errInvalidProviderOutput
+		return modelInterpretation{}, fmt.Errorf("%w: choices_shape", errInvalidProviderOutput)
 	}
 	choice := response.Choices[0]
-	if choice.FinishReason != "stop" || choice.Message.Refusal != nil {
-		return modelInterpretation{}, errInvalidProviderOutput
+	if choice.FinishReason != "stop" {
+		return modelInterpretation{}, fmt.Errorf("%w: unfinished_completion", errInvalidProviderOutput)
+	}
+	if choice.Message.Refusal != nil {
+		return modelInterpretation{}, fmt.Errorf("%w: refused_completion", errInvalidProviderOutput)
 	}
 	if calls := string(choice.Message.ToolCalls); calls != "" && calls != "null" && calls != "[]" {
 		return modelInterpretation{}, errInvalidProviderOutput
 	}
 	var result modelInterpretation
 	if err := decodeObject([]byte(choice.Message.Content), &result); err != nil {
-		return modelInterpretation{}, errInvalidProviderOutput
+		return modelInterpretation{}, fmt.Errorf("%w: command_json", errInvalidProviderOutput)
 	}
 	// Required fields also matter when a provider returns syntactically valid JSON
 	// without honoring the schema. Missing clarification must not mean JSON null.

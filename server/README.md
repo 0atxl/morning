@@ -369,7 +369,7 @@ A Groq outage returns `502 Bad Gateway`:
 }
 ```
 
-Show `error.message` and retain the transcript. Command errors include `command_id` when Go parsed a valid ID. All endpoints return `Cache-Control: no-store`. Go keeps provider bodies, keys and transcripts out of logs.
+Show `error.message` and retain the transcript. Command errors include `command_id` when Go parsed a valid ID. All endpoints return `Cache-Control: no-store`. Go logs fixed validation stages and reasons, without provider bodies, keys, contact values or transcripts.
 
 | HTTP status | Error code | Meaning |
 | --- | --- | --- |
@@ -381,10 +381,13 @@ Show `error.message` and retain the transcript. Command errors include `command_
 | `429` | `rate_limited` | Wait for `Retry-After` before retrying. |
 | `429` | `voice_provider_rate_limited`, `command_provider_rate_limited`, `minutes_provider_rate_limited` | The provider, rather than Morning's application limiter, returned HTTP 429. Wait for the retry delay. |
 | `502` | `voice_provider_unavailable`, `command_provider_unavailable` | Provider request failed. |
-| `502` | `voice_provider_invalid_response`, `command_provider_invalid_response` | Provider output failed validation. |
+| `422` | `command_provider_invalid_response` | Generated command failed validation after one correction attempt. Rephrase or retry; no actions were returned. |
+| `502` | `voice_provider_invalid_response` | Voice token response failed validation. |
 | `504` | `voice_provider_timeout`, `command_provider_timeout` | Provider exceeded the 20-second HTTP timeout. |
 
-Command and contact IDs allow 1 to 128 ASCII letters, digits, hyphens or underscores. Transcripts allow up to 8192 UTF-8 bytes. Supply at most 20 relevant contacts, each with a name up to 200 characters and a plain email address up to 254 characters. Reminder titles and draft subjects allow up to 200 characters. Draft bodies allow up to 8000 characters and can include line breaks. The whole command body allows 64 KiB to accommodate a saved draft snapshot. Groq may return up to 4096 completion tokens. There is no automatic provider retry. Keys must stay in the server environment, without `VITE_` prefixes.
+Command and contact IDs allow 1 to 128 ASCII letters, digits, hyphens or underscores. Transcripts allow up to 8192 UTF-8 bytes. Supply at most 20 relevant contacts, each with a name up to 200 characters and a plain email address up to 254 characters. Reminder titles and draft subjects allow up to 200 characters. Draft bodies allow up to 8000 characters and can include line breaks. The whole command body allows 64 KiB to accommodate a saved draft snapshot. Groq may return up to 4096 completion tokens. Keys must stay in the server environment, without `VITE_` prefixes.
+
+When a generated command fails validation, Go makes at most one correction attempt using the original request and a fixed validation reason. Both attempts share the command's 22-second deadline, and the corrected result must pass the same validation before any lookup or proposed browser save. Rate limits, outages and timeouts do not trigger an automatic retry. A persistent command validation failure returns JSON with HTTP 422 so a proxy's gateway error page cannot replace the explanation. Voice, speech and minutes behavior is unchanged.
 
 ## Conversational replies and draft revisions
 

@@ -80,7 +80,7 @@ func TestHindiCorrectionKeepsSavedDateAndMeridiem(t *testing.T) {
 				if status != 200 || !strings.Contains(body, `"reminder_id":"draft-follow-up-1"`) {
 					t.Fatalf("correction failed: %d %s", status, body)
 				}
-			} else if status != 502 {
+			} else if status != 422 {
 				t.Fatalf("unsafe correction accepted: %d %s", status, body)
 			}
 		}
