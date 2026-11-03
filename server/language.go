@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -9,10 +10,16 @@ func hindiText(text string) bool {
 	return strings.ContainsFunc(text, func(r rune) bool { return unicode.In(r, unicode.Devanagari) })
 }
 
-// Empty preserves the existing English wire format. Language comes from the
-// same constrained interpretation as the command, including Romanized Hindi.
-func replyLanguage(language, transcript string) string {
-	if language == "hi" || language == "" && hindiText(transcript) {
+// Romanized Hindi needs command words or grammar, not Indian names or an
+// English greeting such as "hi". Quoted message content is not a preference
+// for the assistant's reply language.
+var romanHindiCommand = regexp.MustCompile(`(?i)\b(?:mujhe|mujhko|humein|hamein|humko|chahiye|batao|bataiye|likho|likhna|likhdo|bhejo|bhejna|dilana|dilao|kijiye|karo|kardo|dhoondo|dhoondho|dhundo|dhundho)\b|\b(?:kya|kaisa|kaisi|kaise|kitne|kitna|kitni)\s+(?:hai|hain|ho|aap|tum|hoga|hogi|baje)\b|\b(?:mein|me|ka|ki|ke|ko)\s+(?:mausam|samay|khabar|samachar|yaad|badal|kar|likh|bhej)\b|\b(?:kar|karna)\s+(?:do|dena|hai)\b`)
+
+// Empty preserves the English wire format. Every fresh turn defaults to
+// English; a model's unsupported "hi" flag must not switch its confirmation.
+func replyLanguage(transcript string) string {
+	command := unquotedCommand(transcript)
+	if hindiText(command) || romanHindiCommand.MatchString(command) {
 		return "hi"
 	}
 	return ""

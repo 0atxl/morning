@@ -200,7 +200,7 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 			writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 			return
 		}
-		model.Lookup.ReplyLanguage = replyLanguage(model.ReplyLanguage, request.Transcript)
+		model.Lookup.ReplyLanguage = replyLanguage(request.Transcript)
 		a.answerLookup(w, r, request, *model.Lookup)
 		return
 	}
@@ -240,10 +240,10 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(result.Actions) == 1 && result.Actions[0].Type == "reply" {
-		writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Reply: result.Actions[0].Text, ReplyLanguage: replyLanguage(model.ReplyLanguage, request.Transcript)})
+		writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Reply: result.Actions[0].Text, ReplyLanguage: replyLanguage(request.Transcript)})
 		return
 	}
-	language := replyLanguage(model.ReplyLanguage, request.Transcript)
+	language := replyLanguage(request.Transcript)
 	if language == "hi" && result.Clarification != nil {
 		question := hindiQuestion(*result.Clarification)
 		result.Clarification = &question
