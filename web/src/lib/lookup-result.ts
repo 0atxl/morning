@@ -1,4 +1,5 @@
 import { object, RequestError } from "./command-api.ts";
+import { validSpeechLanguage, type SpeechLanguage } from "./language.ts";
 
 export type LookupQuery = {
   kind: "hotels" | "weather" | "news" | "web" | "time";
@@ -15,14 +16,19 @@ export type LookupSource = {
   published_at?: string;
 };
 
-export type LookupContext = { query: LookupQuery; city?: string };
+export type LookupContext = {
+  query: LookupQuery;
+  city?: string;
+  reply_language?: SpeechLanguage;
+};
 
 export function parseLookupContext(data: unknown): LookupContext {
   const value = object(data);
   const query = object(value?.query);
   if (
     !value ||
-    !onlyKeys(value, ["query", "city"]) ||
+    !onlyKeys(value, ["query", "city", "reply_language"]) ||
+    !validSpeechLanguage(value.reply_language) ||
     !query ||
     !onlyKeys(query, ["kind", "terms", "place", "today"]) ||
     typeof query.kind !== "string" ||
@@ -41,6 +47,9 @@ export function parseLookupContext(data: unknown): LookupContext {
       today: false,
     },
     ...(value.city === undefined ? {} : { city: value.city as string }),
+    ...(value.reply_language === undefined
+      ? {}
+      : { reply_language: value.reply_language }),
   };
 }
 
@@ -48,7 +57,7 @@ export function parseLookupContext(data: unknown): LookupContext {
 export function lookupProgress(transcript: string, context?: LookupContext) {
   return (
     Boolean(context) ||
-    /\b(?:weather|hotels?|headlines?|news|search|look\s+up)\b|\b(?:latest|stable)\b.*\b(?:release|version)\b|\bwhat(?:'s|\s+is)?\s+(?:the\s+)?time\b/i.test(
+    /\b(?:weather|hotels?|headlines?|news|search|look\s+up|mausam|khabar|samachar|dhoondho)\b|मौसम|होटल|खबर|समाचार|कितने बजे|\b(?:latest|stable)\b.*\b(?:release|version)\b|\bwhat(?:'s|\s+is)?\s+(?:the\s+)?time\b/i.test(
       transcript,
     )
   );
@@ -68,6 +77,7 @@ export type LookupResult = {
   data_time?: string;
   window_start?: string;
   window_end?: string;
+  reply_language?: SpeechLanguage;
 };
 
 function text(value: unknown, max: number): value is string {
@@ -146,7 +156,9 @@ export function parseLookupResult(data: unknown): LookupResult {
       "data_time",
       "window_start",
       "window_end",
+      "reply_language",
     ]) ||
+    !validSpeechLanguage(value.reply_language) ||
     typeof value.kind !== "string" ||
     !["hotels", "weather", "news", "web", "time"].includes(value.kind) ||
     typeof value.status !== "string" ||
@@ -239,6 +251,9 @@ export function parseLookupResult(data: unknown): LookupResult {
     answer: value.answer,
     speech: value.speech,
     sources,
+    ...(value.reply_language === undefined
+      ? {}
+      : { reply_language: value.reply_language }),
     looked_up_at: value.looked_up_at,
     ...(value.timezone === undefined
       ? {}

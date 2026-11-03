@@ -2,6 +2,10 @@
 
 Morning is a browser-based voice assistant for reminders, editable email drafts and sourced answers. Open the [landing page](https://morning.atuls.me/) or go straight to the [guest workspace](https://morning.atuls.me/app). No account is required.
 
+Speak English, Hindi or Hinglish with the same mic. Transcription uses Deepgram Nova-3 multilingual mode with English and Hindi hints. Hindi and Hinglish commands receive Hindi replies, including reminder confirmations and sourced lookup answers. Email drafts use the language you request. The dashboard controls stay in English.
+
+Try "मुझे दस मिनट में पानी पीने की याद दिलाना", "Pune mein abhi mausam kaisa hai?", or "जयपुर रेलवे स्टेशन के पास तीन होटल ढूँढो". Hindi replies use the existing ElevenLabs setup; browser fallback depends on the voices installed on your device. Contact names must match their saved spelling. Add a contact with its Hindi spelling when transcription uses Devanagari; Morning does not guess identities across scripts.
+
 **[Project documentation](docs/PROJECT.md)** follows the example below through the code and includes Atul Kumar's solo contribution and the verified Actions runs.
 
 > Draft Priya an email asking for the slides, and remind me in ten minutes to follow up.
@@ -32,7 +36,7 @@ The backend also implements calendar-event responses and meeting minutes. Their 
 
 ## Read-only lookup setup
 
-The existing mic supports hotel, news and general web search through [Tavily's hosted MCP](https://docs.tavily.com/documentation/mcp), [Open-Meteo current weather](https://open-meteo.com/en/docs), and city time from the server clock and IANA time zones. Guests use Morning's server credentials and need no MCP client, provider account or key. The integration is available on this review branch; deployment and live-provider verification remain separate steps.
+The existing mic supports hotel, news and general web search through [Tavily's hosted MCP](https://docs.tavily.com/documentation/mcp), [Open-Meteo current weather](https://open-meteo.com/en/docs), and city time from the server clock and IANA time zones. Guests use Morning's server credentials and need no MCP client, provider account or key. Live-provider verification requires a separately approved check.
 
 Say "Find three hotels near Jaipur railway station", "What's the weather in Pune right now?", or "What's the latest technology news in India today?" Then stop recording. The lookup shows Searching and saves an answer with its sources in that conversation before speaking. Open its result row for source links and times in Quick View. History and Play reply use the saved answer. For "hotels near me", answer "Which city or landmark?" by recording the place, or choose Cancel search. The same mic also handles "What's the latest stable Go release?" and "What time is it in Tokyo?".
 

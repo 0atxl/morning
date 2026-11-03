@@ -28,6 +28,11 @@ import { lookupProgress, type LookupContext } from "@/lib/lookup-result";
 import { VoiceCapture, type CapturePhase } from "@/lib/voice-capture";
 import type { Captions } from "@/lib/transcript";
 import { confirmationText, SpokenReply } from "@/lib/spoken-reply";
+import {
+  clarificationTarget,
+  speechLanguage,
+  type SpeechLanguage,
+} from "@/lib/language";
 import type { WorkspaceResult } from "@/lib/results";
 import { idleExecution, type ExecutionActivity } from "@/lib/execution";
 import {
@@ -133,6 +138,7 @@ export function useReminderFlow() {
   const loadFailed = useRef(false);
   const speech = useRef<SpokenReply | null>(null);
   const spokenText = useRef("");
+  const spokenLanguage = useRef<SpeechLanguage>("en");
 
   const current = (id: number) => mounted.current && generation.current === id;
 
@@ -142,22 +148,28 @@ export function useReminderFlow() {
     spokenText.current = "";
   }
 
-  function speak(text: string, saved = true) {
+  function speak(text: string, saved = true, language = speechLanguage(text)) {
     cancelSpeech();
-    const reply = new SpokenReply(text, (state, message) => {
-      if (!mounted.current || speech.current !== reply) return;
-      reportExecution((previous) => ({
-        ...previous,
-        running: state === "speaking",
-        status: state === "speaking" ? "Speaking" : saved ? "Saved" : "Replied",
-      }));
-      setView((previous) => ({
-        ...previous,
-        playbackError: message ?? "",
-      }));
-    });
+    const reply = new SpokenReply(
+      text,
+      (state, message) => {
+        if (!mounted.current || speech.current !== reply) return;
+        reportExecution((previous) => ({
+          ...previous,
+          running: state === "speaking",
+          status:
+            state === "speaking" ? "Speaking" : saved ? "Saved" : "Replied",
+        }));
+        setView((previous) => ({
+          ...previous,
+          playbackError: message ?? "",
+        }));
+      },
+      language,
+    );
     speech.current = reply;
     spokenText.current = text;
+    spokenLanguage.current = language;
     setView((previous) => ({ ...previous, replyAvailable: true }));
     void reply.start();
   }
@@ -319,12 +331,20 @@ export function useReminderFlow() {
         outcome.created &&
         selectedSessionRef.current === command.turn.sessionId
       )
-        speak(command.turn.lookup!.speech);
+        speak(
+          command.turn.lookup!.speech,
+          true,
+          command.turn.lookup!.reply_language,
+        );
       return;
     }
     if (command.response.kind === "reply") {
       const text = command.response.text;
-      command.turn = { ...command.turn, reply: text };
+      command.turn = {
+        ...command.turn,
+        reply: text,
+        replyLanguage: command.response.replyLanguage,
+      };
       await storeTurn(command.turn);
       if (!current(id)) return;
       setTurns((previous) =>
@@ -349,13 +369,18 @@ export function useReminderFlow() {
         playbackError: "",
       }));
       retainedAudio.current = [];
-      speak(text, false);
+      speak(text, false, command.response.replyLanguage);
       return;
     }
     if (command.response.kind === "clarification") {
       const { question, options, lookupContext } = command.response;
       if (lookupContext) {
-        command.turn = { ...command.turn, reply: question, lookupContext };
+        command.turn = {
+          ...command.turn,
+          reply: question,
+          lookupContext,
+          replyLanguage: command.response.replyLanguage,
+        };
         await storeTurn(command.turn);
         if (!current(id)) return;
         setTurns((previous) =>
@@ -364,12 +389,10 @@ export function useReminderFlow() {
           ),
         );
       }
-      const reminderOptions = /which\b.*\b(?:reminder|task)/i.test(question)
-        ? command.reminders
-        : [];
-      const draftOptions = /which\b.*\b(?:draft|email)/i.test(question)
-        ? command.drafts
-        : [];
+      const reminderOptions =
+        clarificationTarget(question) === "reminder" ? command.reminders : [];
+      const draftOptions =
+        clarificationTarget(question) === "draft" ? command.drafts : [];
       reportExecution({
         requestId: command.request.command_id,
         stages: options.length ? ["MAIL"] : ["ORB"],
@@ -393,10 +416,11 @@ export function useReminderFlow() {
         error: "",
       }));
       if (
-        lookupContext &&
+        (lookupContext || command.response.replyLanguage === "hi") &&
+        [...question].length <= 240 &&
         selectedSessionRef.current === command.turn.sessionId
       )
-        speak(question, false);
+        speak(question, false, command.response.replyLanguage);
       return;
     }
     setView((previous) => ({ ...previous, phase: "saving", error: "" }));
@@ -472,6 +496,7 @@ export function useReminderFlow() {
             : updatingDraft
               ? "update_draft"
               : undefined,
+          command.response.replyLanguage,
         )
       : "This command is already saved";
     setView((previous) => ({
@@ -490,7 +515,8 @@ export function useReminderFlow() {
     }));
     retainedAudio.current = [];
     // commitCommand resolves only from tx.oncomplete. A replay never speaks.
-    if (outcome.created) speak(confirmation);
+    if (outcome.created)
+      speak(confirmation, true, command.response.replyLanguage);
   }
 
   function showError(error: unknown) {
@@ -781,9 +807,17 @@ export function useReminderFlow() {
       .filter((turn) => turn.sessionId === selectedSession)
       .at(-1);
     const text = latest?.lookup?.speech ?? latest?.reply;
-    if (speech.current && (!text || text === spokenText.current))
+    const language =
+      latest?.lookup?.reply_language ??
+      latest?.replyLanguage ??
+      speechLanguage(text ?? "");
+    if (
+      speech.current &&
+      (!text ||
+        (text === spokenText.current && language === spokenLanguage.current))
+    )
       speech.current.play();
-    else if (text) speak(text, !latest?.lookupContext);
+    else if (text) speak(text, !latest?.lookupContext, language);
     else speech.current?.play();
   }
 
@@ -811,7 +845,7 @@ export function useReminderFlow() {
     if (
       !command ||
       command.response?.kind !== "clarification" ||
-      !/which\b.*\b(?:reminder|task)/i.test(command.response.question)
+      clarificationTarget(command.response.question) !== "reminder"
     )
       return;
     try {
@@ -834,7 +868,7 @@ export function useReminderFlow() {
     if (
       !command ||
       command.response?.kind !== "clarification" ||
-      !/which\b.*\b(?:draft|email)/i.test(command.response.question)
+      clarificationTarget(command.response.question) !== "draft"
     )
       return;
     try {
@@ -946,9 +980,14 @@ export function useReminderFlow() {
     cancel,
     edit,
     retrySpeech,
-    playReply: (text: string) => {
-      if (speech.current && spokenText.current === text) speech.current.play();
-      else speak(text);
+    playReply: (text: string, language = speechLanguage(text)) => {
+      if (
+        speech.current &&
+        spokenText.current === text &&
+        spokenLanguage.current === language
+      )
+        speech.current.play();
+      else speak(text, true, language);
     },
     stop,
     startHold,

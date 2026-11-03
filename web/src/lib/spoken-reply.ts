@@ -1,19 +1,27 @@
 import type { WorkspaceResult } from "./results.ts";
+import { speechLanguage, type SpeechLanguage } from "./language.ts";
 
 export function confirmationText(
   results: readonly WorkspaceResult[],
   operation?: "reschedule_reminder" | "update_draft",
+  language: SpeechLanguage = "en",
 ) {
   const draft = results.some((result) => result.kind === "draft");
   const reminder = results.find((result) => result.kind === "reminder");
+  if (!reminder && language === "hi")
+    return operation === "update_draft"
+      ? "ईमेल ड्राफ्ट अपडेट हो गया।"
+      : "ईमेल ड्राफ्ट सेव हो गया।";
   if (!reminder)
     return operation === "update_draft" ? "Draft updated." : "Draft saved.";
-  const time = new Intl.DateTimeFormat("en", {
+  const time = new Intl.DateTimeFormat(language === "hi" ? "hi-IN" : "en", {
     timeZone: reminder.timezone,
     weekday: "long",
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(reminder.dueAt));
+  if (language === "hi")
+    return `${draft ? "ईमेल ड्राफ्ट सेव हो गया। " : ""}${time} के लिए रिमाइंडर ${operation === "reschedule_reminder" ? "अपडेट" : "सेव"} हो गया।`;
   return `${draft ? "Draft saved. " : ""}Reminder ${operation === "reschedule_reminder" ? "updated" : "saved"} for ${time}.`;
 }
 
@@ -54,10 +62,16 @@ export class SpokenReply {
 
   private readonly text: string;
   private readonly report: PlaybackReport;
+  private readonly language: SpeechLanguage;
 
-  constructor(text: string, report: PlaybackReport) {
+  constructor(
+    text: string,
+    report: PlaybackReport,
+    language = speechLanguage(text),
+  ) {
     this.text = text;
     this.report = report;
+    this.language = language;
   }
 
   async start(browserError?: string) {
@@ -69,7 +83,10 @@ export class SpokenReply {
           "Content-Type": "application/json",
           Accept: "audio/mpeg, application/json;q=0.9",
         },
-        body: JSON.stringify({ text: this.text }),
+        body: JSON.stringify({
+          text: this.text,
+          ...(this.language === "hi" ? { language: "hi" } : {}),
+        }),
         signal: AbortSignal.any([
           this.abort.signal,
           AbortSignal.timeout(12_000),
@@ -187,7 +204,13 @@ export class SpokenReply {
     }
     try {
       const utterance = new SpeechSynthesisUtterance(this.text);
-      utterance.lang = "en";
+      utterance.lang = this.language === "hi" ? "hi-IN" : "en";
+      const voice = synth
+        .getVoices?.()
+        .find(
+          (voice) => voice.lang.toLowerCase().split("-")[0] === this.language,
+        );
+      if (voice) utterance.voice = voice;
       const clear = () => {
         window.clearTimeout(timer);
         utterance.onstart = utterance.onend = utterance.onerror = null;

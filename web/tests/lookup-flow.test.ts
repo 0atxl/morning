@@ -107,6 +107,31 @@ test("lookup replies are read-only and cannot accompany action or reply envelope
     );
 });
 
+test("a Hindi lookup keeps its language and sources through History storage", async () => {
+  const parsed = parseCommandResponse(
+    {
+      ...envelope,
+      reply_language: "hi",
+      lookup: {
+        ...snapshot,
+        answer: "जयपुर रेलवे स्टेशन के पास Hotel Station Garden मिला।",
+        speech: "जयपुर रेलवे स्टेशन के पास Hotel Station Garden मिला।",
+      },
+    },
+    request,
+  );
+  assert.equal(parsed.kind, "lookup");
+  if (parsed.kind !== "lookup") return;
+  await commitLookup(await savedTurn(), parsed.result);
+  const reopened = await loadWorkspace();
+  const saved = reopened.turns.find(
+    (turn) => turn.id === request.command_id,
+  )?.lookup;
+  assert.equal(saved?.reply_language, "hi");
+  assert.deepEqual(saved?.sources, snapshot.sources);
+  assert.equal(saved?.looked_up_at, snapshot.looked_up_at);
+});
+
 test("a spoken place keeps the pending lookup and cannot turn into a reminder", () => {
   const context = parseLookupContext({
     query: { kind: "hotels", terms: "", place: "", today: false },

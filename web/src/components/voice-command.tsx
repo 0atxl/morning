@@ -6,6 +6,7 @@ import type { VoiceView } from "@/hooks/use-reminder-flow";
 import { canToggleRecorder } from "@/lib/recorder-shortcut";
 import { UnderOrbDotTranscript } from "@/components/dot-morph";
 import { formatDue } from "@/lib/results";
+import { clarificationTarget } from "@/lib/language";
 
 type Props = {
   view: VoiceView;
@@ -133,7 +134,7 @@ export function VoiceCommand({
             ? "Listening…"
             : archive
               ? "Earlier activity"
-              : "Press the mic to start."
+              : "Speak English, Hindi or Hinglish."
         }
       />
       <p id="capture-notice" className="capture-notice">
@@ -193,7 +194,7 @@ export function VoiceCommand({
               </Button>
             ) : null}
             {!view.options.length &&
-            /contact|address|recipient/i.test(view.question) ? (
+            clarificationTarget(view.question) === "contact" ? (
               <Button variant="outline" onClick={onOpenContacts}>
                 Add contact
               </Button>
