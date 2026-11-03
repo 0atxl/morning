@@ -1,0 +1,381 @@
+@import "tailwindcss";
+
+/* Kept local to the landing page, including when it is mounted by a router. */
+:root:has(.morning-landing) {
+  background: #fafafa;
+  color-scheme: light;
+}
+
+body:has(.morning-landing) {
+  margin: 0;
+}
+
+.morning-landing {
+  --landing-ground: #fafafa;
+  --landing-ink: #292725;
+  --landing-secondary: #6b6662;
+  --landing-ease: cubic-bezier(0.23, 1, 0.32, 1);
+  position: relative;
+  isolation: isolate;
+  min-width: 320px;
+  min-height: 100svh;
+  padding: 38px clamp(24px, 5vw, 76px) 64px;
+  background: var(--landing-ground);
+  color: var(--landing-ink);
+  font-family:
+    "Inter Variable",
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.morning-landing *,
+.morning-landing *::before,
+.morning-landing *::after {
+  box-sizing: border-box;
+}
+
+.morning-landing ::selection {
+  background: #f5d7c4;
+  color: var(--landing-ink);
+}
+
+.landing-header,
+.landing-main {
+  width: 100%;
+  max-width: 1160px;
+  margin-inline: auto;
+}
+
+.landing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+}
+
+.landing-links {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font-size: 14px;
+}
+
+.landing-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+.landing-links > a:first-child {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.landing-links .landing-presentation {
+  padding-inline: 16px;
+  border-radius: 999px;
+  background: #f0eeec;
+  color: var(--landing-ink);
+  box-shadow: none;
+}
+
+.landing-links a:focus-visible {
+  outline: 2px solid #88624d;
+  outline-offset: 3px;
+}
+
+.landing-wordmark {
+  font-size: 25px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -0.055em;
+}
+
+.landing-main {
+  display: grid;
+  grid-template-columns: 1.08fr 1fr;
+  align-items: center;
+  gap: clamp(64px, 8vw, 116px);
+  min-height: min(720px, calc(100svh - 138px));
+  padding-block: 72px 48px;
+}
+
+.landing-intro h1 {
+  margin: 0;
+  font-size: clamp(48px, 5.4vw, 76px);
+  font-weight: 450;
+  line-height: 1.04;
+  letter-spacing: -0.065em;
+}
+
+.landing-description {
+  max-width: 34ch;
+  margin: 28px 0 0;
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+.landing-actions {
+  margin-top: 32px;
+}
+
+.morning-landing .landing-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  height: 50px;
+  padding: 0 23px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--landing-ink);
+  color: var(--landing-ground);
+  box-shadow: none;
+  font-size: 15px;
+  font-weight: 450;
+  line-height: 1;
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 150ms var(--landing-ease);
+}
+
+.morning-landing .landing-cta svg {
+  width: 17px;
+  height: 17px;
+  stroke-width: 1.6;
+}
+
+.morning-landing .landing-cta:focus-visible {
+  outline: 2px solid #88624d;
+  outline-offset: 5px;
+  box-shadow: none;
+}
+
+.morning-landing .landing-cta:active:not(:focus-visible) {
+  transform: scale(0.97);
+  transition-duration: 100ms;
+}
+
+.landing-guest-note,
+.landing-example-caption {
+  margin: 13px 0 0;
+  color: var(--landing-secondary);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.landing-example {
+  min-width: 0;
+  margin: 0;
+}
+
+.landing-orb {
+  width: clamp(132px, 13vw, 176px);
+  aspect-ratio: 1;
+  margin-bottom: 42px;
+  border-radius: 50%;
+  /* Morning's peach material is the one brand exception to flat page colours. */
+  background:
+    radial-gradient(circle at 27% 23%, #fff4de, transparent 49%),
+    radial-gradient(ellipse at 32% 75%, #f4ac89, transparent 59%),
+    radial-gradient(ellipse at 76% 34%, #ffd4a2, #f8d4b2 78%);
+}
+
+.landing-utterance,
+.landing-utterance p {
+  margin: 0;
+}
+
+.landing-utterance {
+  max-width: 28ch;
+  font-size: clamp(24px, 2.1vw, 29px);
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: -0.035em;
+  text-wrap: pretty;
+}
+
+.landing-result {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 27px;
+  padding: 15px 16px;
+  border-radius: 6px;
+  background: #f0eeec;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.landing-result p {
+  margin: 0;
+}
+
+.landing-result-check {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.6;
+}
+
+.landing-result-time {
+  color: #625c57;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.landing-vapour {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.morning-landing.vapour-active [data-vapour-text] {
+  /* As in Frost, real HTML stays in layout and the accessibility tree. */
+  opacity: 0;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .landing-links .landing-presentation:hover {
+    background: #e6e2df;
+  }
+
+  .morning-landing .landing-cta:hover {
+    background: #45403b;
+  }
+}
+
+@media (max-width: 1000px) and (min-width: 721px) {
+  .landing-main {
+    gap: 48px;
+  }
+
+  .landing-intro h1 {
+    font-size: clamp(42px, 5.4vw, 54px);
+  }
+
+  .landing-result-separator {
+    display: none;
+  }
+
+  .landing-result-time {
+    display: block;
+  }
+}
+
+@media (max-width: 720px) {
+  .morning-landing {
+    padding: 28px 24px 40px;
+  }
+
+  .landing-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 16px;
+    min-height: 48px;
+  }
+
+  .landing-wordmark {
+    line-height: 48px;
+  }
+
+  .landing-main {
+    display: block;
+    min-height: 0;
+    padding-block: 34px 0;
+  }
+
+  .landing-intro h1 {
+    font-size: clamp(42px, 10.8vw, 64px);
+  }
+
+  .landing-description {
+    max-width: 36ch;
+    margin-top: 23px;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  .landing-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    margin-top: 26px;
+  }
+
+  .landing-guest-note {
+    margin: 0;
+  }
+
+  .landing-example {
+    margin-top: 58px;
+  }
+
+  .landing-orb {
+    position: absolute;
+    top: 22px;
+    right: 24px;
+    width: 58px;
+    margin: 0;
+  }
+
+  .landing-utterance {
+    max-width: 32ch;
+    font-size: 24px;
+  }
+
+  .landing-result {
+    margin-top: 23px;
+    padding: 14px;
+  }
+
+  .landing-result-separator {
+    display: none;
+  }
+
+  .landing-result-time {
+    display: block;
+  }
+}
+
+@media (prefers-reduced-motion: reduce), (hover: none), (pointer: coarse) {
+  .morning-landing .landing-vapour {
+    display: none;
+  }
+
+  .morning-landing.vapour-active [data-vapour-text] {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .morning-landing .landing-cta {
+    transition: none;
+  }
+
+  .morning-landing .landing-cta:active:not(:focus-visible) {
+    transform: none;
+  }
+}
+
+@media print {
+  .morning-landing .landing-vapour {
+    display: none;
+  }
+
+  .morning-landing.vapour-active [data-vapour-text] {
+    opacity: 1;
+  }
+}
