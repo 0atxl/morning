@@ -1,9 +1,11 @@
+import { micLevelMeter } from "./mic-level.ts";
 import { object, voiceToken } from "./command-api.ts";
 import { TranscriptBuffer, type Captions } from "./transcript.ts";
 
 export type CapturePhase =
   "requesting" | "connecting" | "listening" | "finishing";
 type Callbacks = {
+  level: (level: number) => void;
   phase: (phase: CapturePhase) => void;
   captions: (captions: Captions) => void;
 };
@@ -17,6 +19,7 @@ export class VoiceCapture {
   private readonly transcript = new TranscriptBuffer();
   private socket: WebSocket | null = null;
   private stream: MediaStream | null = null;
+  private meter?: ReturnType<typeof micLevelMeter>;
   private recorder: MediaRecorder | null = null;
   private recorderStopped: Promise<void> = Promise.resolve();
   private resolve: (transcript: string) => void = () => {};
@@ -55,6 +58,11 @@ export class VoiceCapture {
         throw new Error(
           "Microphone recording isn't available. Use a supported browser on HTTPS or localhost.",
         );
+      }
+      try {
+        this.meter = micLevelMeter(this.callbacks.level);
+      } catch {
+        // Metering is optional on browsers that only support MediaRecorder.
       }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       if (this.ended) {
@@ -140,6 +148,12 @@ export class VoiceCapture {
           this.closeStream();
         } else {
           this.recorder!.start(250);
+          try {
+            this.meter?.listen(this.stream!);
+          } catch {
+            this.meter?.close();
+            this.meter = undefined;
+          }
           this.callbacks.captions({ final: "", interim: "" });
           this.callbacks.phase("listening");
         }
@@ -327,6 +341,8 @@ export class VoiceCapture {
   }
 
   private releaseMicrophone() {
+    this.meter?.close();
+    this.meter = undefined;
     const stream = this.stream;
     this.stream = null;
     stream?.getTracks().forEach((track) => track.stop());

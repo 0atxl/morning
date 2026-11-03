@@ -8,8 +8,9 @@ import { UnderOrbDotTranscript } from "@/components/dot-morph";
 
 type Props = {
   view: VoiceView;
-  preview: boolean;
-  primaryRef: Ref<HTMLButtonElement>;
+  orbCore: Ref<HTMLSpanElement>;
+  disabled: boolean;
+  archive: boolean;
   onToggle: () => void;
   onRetry: () => void;
   onCancel: () => void;
@@ -20,8 +21,9 @@ type Props = {
 
 export function VoiceCommand({
   view,
-  preview,
-  primaryRef,
+  orbCore,
+  disabled,
+  archive,
   onToggle,
   onRetry,
   onCancel,
@@ -52,9 +54,7 @@ export function VoiceCommand({
           : phase === "finishing"
             ? "Finishing transcription…"
             : phase === "processing"
-              ? preview
-                ? "Processing sample command…"
-                : "Interpreting your command…"
+              ? "Working…"
               : phase === "saving"
                 ? "Saving in this browser…"
                 : view.status;
@@ -83,18 +83,19 @@ export function VoiceCommand({
     >
       <h1 className="voice-heading">
         <Button
-          ref={primaryRef}
           variant="ghost"
           className="voice-trigger"
           onClick={onToggle}
-          disabled={blocked || wait > 0}
+          disabled={disabled || blocked || wait > 0}
           aria-pressed={listening}
           aria-describedby="capture-notice recorder-shortcut-description"
           aria-controls="command-transcript"
         >
           <span className="mic-orb" aria-hidden="true">
             <span className="orb-material" />
-            <span className="orb-active" />
+            <span className="orb-core" ref={orbCore}>
+              <span className="orb-flow" />
+            </span>
             <span className="orb-lens" />
           </span>
           <span className="voice-action">
@@ -110,11 +111,6 @@ export function VoiceCommand({
         Hold the physical Right Control key to talk while the dashboard has
         focus. Release to finish. Click the microphone for hands-free recording.
       </span>
-      <p id="capture-notice" className={preview ? "sr-only" : "capture-notice"}>
-        {preview
-          ? "Design preview. Sample words only; the microphone is off."
-          : "Audio goes to Deepgram. Your command and relevant contacts go to Morning's server. Results stay in this browser."}
-      </p>
       <UnderOrbDotTranscript
         text={
           hasWords
@@ -122,8 +118,21 @@ export function VoiceCommand({
             : ""
         }
         isTranscribing={listening}
-        fallback={listening ? "Listening…" : "Press the mic to start."}
+        fallback={
+          listening
+            ? "Listening…"
+            : archive
+              ? "Earlier activity"
+              : "Press the mic to start."
+        }
       />
+      <p id="capture-notice" className="capture-notice">
+        {archive
+          ? "Choose New session to record."
+          : disabled
+            ? "Please wait to start another recording."
+            : "Audio goes to Deepgram. Your command and relevant contacts go to Morning's server. Results stay in this browser."}
+      </p>
       <div
         className={`command-status${status ? " is-visible" : ""}`}
         role="status"
@@ -131,16 +140,18 @@ export function VoiceCommand({
       >
         {phase === "saved" ? <Check size={14} aria-hidden="true" /> : null}
         {status}
+        {view.playReply ? (
+          <Button size="sm" variant="outline" onClick={onRetrySpeech}>
+            Play reply
+          </Button>
+        ) : null}
         {listening ? (
           <span className="sr-only">
-            {preview
-              ? "Showing sample captions. Microphone is off."
-              : "Microphone is recording. Press Stop listening to finish."}
+            Microphone is recording. Press Stop listening to finish.
           </span>
         ) : null}
       </div>
-      {!preview &&
-      ["requesting", "connecting", "finishing", "processing"].includes(
+      {["requesting", "connecting", "finishing", "processing"].includes(
         phase,
       ) ? (
         <Button variant="outline" className="capture-cancel" onClick={onCancel}>
@@ -156,8 +167,7 @@ export function VoiceCommand({
                 Record again
               </Button>
             ) : null}
-            {!preview &&
-            !view.options.length &&
+            {!view.options.length &&
             /contact|address|recipient/i.test(view.question) ? (
               <Button variant="outline" onClick={onOpenContacts}>
                 Add contact
@@ -199,14 +209,6 @@ export function VoiceCommand({
             </Button>
           </AlertDescription>
         </Alert>
-      ) : null}
-      {view.speechError ? (
-        <div className="voice-feedback feedback-line" role="status">
-          <p>{view.speechError}</p>
-          <Button variant="outline" onClick={onRetrySpeech}>
-            Retry speech
-          </Button>
-        </div>
       ) : null}
       {view.deliveryNotice ? (
         <p className="delivery-notice">{view.deliveryNotice}</p>

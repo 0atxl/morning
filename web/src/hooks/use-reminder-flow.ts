@@ -10,11 +10,17 @@ import {
   addGuestContact,
   commitCommand,
   loadWorkspace,
+  earlierActivity,
+  selectWorkspaceSession,
+  storeTurn,
+  type Session,
+  type Turn,
   updateResult,
   type StoredResult,
 } from "@/lib/reminder-store";
 import { VoiceCapture, type CapturePhase } from "@/lib/voice-capture";
 import type { Captions } from "@/lib/transcript";
+import { confirmationText, SpokenReply } from "@/lib/spoken-reply";
 import type { WorkspaceResult } from "@/lib/results";
 import { idleExecution, type ExecutionActivity } from "@/lib/execution";
 import {
@@ -41,7 +47,8 @@ export type VoiceView = {
   error: string;
   status: string;
   retryAt: number;
-  speechError: string;
+  playReply: boolean;
+  turnId?: string;
 };
 
 export const readyVoice: VoiceView = {
@@ -53,10 +60,15 @@ export const readyVoice: VoiceView = {
   error: "",
   status: "",
   retryAt: 0,
-  speechError: "",
+  playReply: false,
 };
 
-type Pending = { request: CommandRequest; response?: CommandResponse };
+type Pending = {
+  turn: Turn;
+  turnSaved: boolean;
+  request: CommandRequest;
+  response?: CommandResponse;
+};
 
 function errorMessage(error: unknown) {
   if (error instanceof DOMException && error.name === "NotAllowedError")
@@ -81,9 +93,16 @@ export function useReminderFlow() {
   });
   const [records, setRecords] = useState<StoredResult[]>([]);
   const [contacts, setContacts] = useState<GuestContact[]>([]);
-  const [savedResult, setSavedResult] = useState<StoredResult | null>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [selectedSession, setSelectedSession] = useState("");
+  const [commandSession, setCommandSession] = useState("");
+  const [selecting, setSelecting] = useState(false);
+  const selectingRef = useRef(false);
+  const [selectionError, setSelectionError] = useState("");
   const [execution, reportExecution] =
     useState<ExecutionActivity>(idleExecution);
+  const orbCore = useRef<HTMLSpanElement>(null);
   const mounted = useRef(false);
   const generation = useRef(0);
   const busy = useRef(false);
@@ -94,109 +113,31 @@ export function useReminderFlow() {
   const pending = useRef<Pending | null>(null);
   const requestAbort = useRef<AbortController | null>(null);
   const loadFailed = useRef(false);
-  const speech = useRef<SpeechSynthesisUtterance | null>(null);
-  const speechResultIds = useRef<string[]>([]);
+  const speech = useRef<SpokenReply | null>(null);
 
   const current = (id: number) => mounted.current && generation.current === id;
 
   function cancelSpeech() {
-    if (!speech.current) return;
+    speech.current?.stop();
     speech.current = null;
-    window.speechSynthesis?.cancel();
-    if (mounted.current)
-      reportExecution((previous) => ({
-        ...previous,
-        running: false,
-        status: "Confirmation stopped",
-      }));
   }
 
-  function speak(saved: StoredResult[]) {
+  function speak(text: string) {
     cancelSpeech();
-    speechResultIds.current = saved.map((result) => result.id);
-    if (
-      !("speechSynthesis" in window) ||
-      typeof SpeechSynthesisUtterance === "undefined"
-    ) {
-      setView((previous) => ({
-        ...previous,
-        speechError:
-          "Saved. Spoken confirmation isn't available in this browser.",
-      }));
-      return;
-    }
-    try {
-      const reminder = saved.find((result) => result.kind === "reminder");
-      const draft = saved.find((result) => result.kind === "draft");
-      const time = reminder
-        ? new Intl.DateTimeFormat("en", {
-            timeZone: reminder.timezone,
-            weekday: "long",
-            month: "long",
-            day: "numeric",
-            hour: "numeric",
-            minute: "2-digit",
-            timeZoneName: "short",
-          }).format(new Date(reminder.dueAt))
-        : "";
-      const utterance = new SpeechSynthesisUtterance(
-        [
-          draft ? "Draft saved." : "",
-          reminder ? `${reminder.title}. Reminder saved for ${time}.` : "",
-        ]
-          .filter(Boolean)
-          .join(" "),
-      );
-      utterance.lang = "en";
-      speech.current = utterance;
-      utterance.onstart = () => {
-        if (mounted.current && speech.current === utterance)
-          reportExecution((previous) => ({
-            ...previous,
-            running: true,
-            status: "Speaking confirmation",
-            stages: reminder ? ["DIAL"] : ["MAIL"],
-          }));
-      };
-      utterance.onend = () => {
-        if (speech.current === utterance) {
-          speech.current = null;
-          if (mounted.current)
-            reportExecution((previous) => ({
-              ...previous,
-              running: false,
-              status: "Confirmation spoken",
-            }));
-        }
-      };
-      const failed = () => {
-        if (mounted.current && speech.current === utterance) {
-          speech.current = null;
-          reportExecution((previous) => ({
-            ...previous,
-            running: false,
-            status: "Saved. Spoken confirmation unavailable",
-          }));
-          setView((previous) => ({
-            ...previous,
-            speechError: "Saved, but the spoken confirmation couldn't play.",
-          }));
-        }
-      };
-      utterance.onerror = failed;
-      window.speechSynthesis.speak(utterance);
-    } catch {
-      speech.current = null;
+    const reply = new SpokenReply(text, (state) => {
+      if (!mounted.current || speech.current !== reply) return;
       reportExecution((previous) => ({
         ...previous,
-        running: false,
-        status: "Saved. Spoken confirmation unavailable",
+        running: state === "speaking",
+        status: state === "speaking" ? "Speaking" : "Saved",
       }));
       setView((previous) => ({
         ...previous,
-        speechError: "Saved, but the spoken confirmation couldn't play.",
+        playReply: state === "blocked",
       }));
-    }
+    });
+    speech.current = reply;
+    void reply.start();
   }
 
   async function load() {
@@ -208,6 +149,9 @@ export function useReminderFlow() {
       const stored = await loadWorkspace();
       if (!current(id)) return;
       setRecords(stored.records);
+      setSessions(stored.sessions);
+      setTurns(stored.turns);
+      setSelectedSession(stored.selectedSession);
       setContacts(stored.contacts);
       loadFailed.current = false;
       setView((previous) => ({ ...previous, phase: "ready", error: "" }));
@@ -224,6 +168,25 @@ export function useReminderFlow() {
     }
   }
 
+  async function selectSession(id?: string) {
+    if (selectingRef.current || id === selectedSession) return;
+    selectingRef.current = true;
+    setSelecting(true);
+    setSelectionError("");
+    try {
+      const { selected, created } = await selectWorkspaceSession(id);
+      if (!mounted.current) return;
+      if (created) setSessions((previous) => [...previous, created]);
+      setSelectedSession(selected);
+    } catch {
+      if (mounted.current)
+        setSelectionError("Couldn't switch sessions. Try again.");
+    } finally {
+      selectingRef.current = false;
+      if (mounted.current) setSelecting(false);
+    }
+  }
+
   useEffect(() => {
     mounted.current = true;
     void load();
@@ -237,7 +200,7 @@ export function useReminderFlow() {
       captureOwner.current = null;
       if (mounted.current) {
         reportExecution(idleExecution);
-        setView((previous) => ({ ...previous, phase: "ready", status: "" }));
+        setView(readyVoice);
       }
     };
     window.addEventListener("pagehide", release);
@@ -246,7 +209,7 @@ export function useReminderFlow() {
       release();
       window.removeEventListener("pagehide", release);
     };
-    // Startup only reads local records. Provider calls happen in click handlers.
+    // Startup opens local storage. Audio starts only from user actions or a new save.
   }, []);
 
   async function savePending(id: number) {
@@ -257,12 +220,23 @@ export function useReminderFlow() {
       requestId: command.request.command_id,
       stages: command.request.selected_contact_id ? ["MAIL"] : ["ORB"],
       status: command.request.selected_contact_id
-        ? "Resolving selected contact"
-        : "Interpreting command",
+        ? "Preparing your draft"
+        : "Working",
       running: true,
     });
+    setView((previous) => ({
+      ...previous,
+      turnId: command.turn.id,
+      phase: "processing",
+      error: "",
+    }));
+    if (!command.turnSaved) {
+      await storeTurn(command.turn);
+      if (mounted.current) setTurns((previous) => [...previous, command.turn]);
+      command.turnSaved = true;
+      if (!current(id)) return;
+    }
     if (!command.response) {
-      setView((previous) => ({ ...previous, phase: "processing", error: "" }));
       const abort = new AbortController();
       requestAbort.current = abort;
       command.response = await interpretCommand(command.request, abort.signal);
@@ -303,7 +277,11 @@ export function useReminderFlow() {
     saving.current = true;
     let outcome: Awaited<ReturnType<typeof commitCommand>>;
     try {
-      outcome = await commitCommand(command.request, command.response.actions);
+      outcome = await commitCommand(
+        command.request,
+        command.response.actions,
+        command.turn.sessionId,
+      );
     } finally {
       saving.current = false;
     }
@@ -314,10 +292,6 @@ export function useReminderFlow() {
         (record) => !outcome.records.some((saved) => saved.id === record.id),
       ),
     ]);
-    setSavedResult(
-      outcome.records.find((result) => result.kind === "draft") ??
-        outcome.records[0],
-    );
     const hasDraft = outcome.records.some((result) => result.kind === "draft");
     const hasReminder = outcome.records.some(
       (result) => result.kind === "reminder",
@@ -334,6 +308,9 @@ export function useReminderFlow() {
             : "Reminder saved",
       running: false,
     });
+    const confirmation = outcome.created
+      ? confirmationText(outcome.records)
+      : "This command is already saved";
     setView((previous) => ({
       ...previous,
       phase: "saved",
@@ -343,18 +320,12 @@ export function useReminderFlow() {
       deliveryNotice: hasDraft
         ? "Open the draft to review and send in Gmail."
         : "",
-      status: outcome.created
-        ? hasDraft && hasReminder
-          ? "Draft and reminder saved"
-          : hasDraft
-            ? "Draft saved"
-            : "Reminder saved"
-        : "This command is already saved",
-      speechError: "",
+      status: confirmation,
+      playReply: false,
     }));
     retainedAudio.current = [];
     // commitCommand resolves only from tx.oncomplete. A replay never speaks.
-    if (outcome.created) speak(outcome.records);
+    if (outcome.created) speak(confirmation);
   }
 
   function showError(error: unknown) {
@@ -380,7 +351,12 @@ export function useReminderFlow() {
       await load();
       return;
     }
+    const sessionId = selectedSession;
+    if (!sessionId || sessionId === earlierActivity || selectingRef.current)
+      return;
+    setCommandSession(sessionId);
     busy.current = true;
+    orbCore.current?.style.removeProperty("--level");
     captureOwner.current = owner;
     const id = ++generation.current;
     cancelSpeech();
@@ -391,18 +367,13 @@ export function useReminderFlow() {
       status: "Starting transcription",
       running: true,
     });
-    setView((previous) => ({
-      ...previous,
-      error: "",
-      question: "",
-      options: [],
-      deliveryNotice: "",
-      status: "",
-      speechError: "",
-      retryAt: 0,
-    }));
+    setView({ ...readyVoice, phase: replay ? "connecting" : "requesting" });
     const session = new VoiceCapture(
       {
+        level: (level) => {
+          if (current(id))
+            orbCore.current?.style.setProperty("--level", level.toFixed(3));
+        },
         phase: (phase) => {
           if (current(id)) {
             setView((previous) => ({ ...previous, phase }));
@@ -435,18 +406,26 @@ export function useReminderFlow() {
         setView((previous) => ({
           ...previous,
           deliveryNotice:
-            "Email delivery isn't available. Morning can save a draft for you to copy.",
+            "Morning can prepare a draft for you to send in Gmail.",
         }));
       retainedAudio.current = session.audioComplete ? [...session.audio] : [];
       if (new TextEncoder().encode(transcript).byteLength > 8192)
         throw new Error(
           "This command is too long. Record a shorter, complete reminder command.",
         );
+      const turn = {
+        id: crypto.randomUUID(),
+        sessionId,
+        transcript,
+        createdAt: new Date().toISOString(),
+      };
       pending.current = {
+        turn,
+        turnSaved: false,
         request: {
-          command_id: crypto.randomUUID(),
+          command_id: turn.id,
           transcript,
-          now: new Date().toISOString(),
+          now: turn.createdAt,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           contacts: relevantContacts(contacts, transcript),
         },
@@ -516,14 +495,14 @@ export function useReminderFlow() {
       );
   }
 
-  function showTranscript(transcript: string) {
-    if (busy.current) return;
-    setView({ ...readyVoice, captions: { final: transcript, interim: "" } });
-    reportExecution(idleExecution);
-  }
-
   function startHold() {
-    if (busy.current || loadFailed.current || Date.now() < view.retryAt)
+    if (
+      busy.current ||
+      loadFailed.current ||
+      selectingRef.current ||
+      selectedSession === earlierActivity ||
+      (commandSession === selectedSession && Date.now() < view.retryAt)
+    )
       return false;
     void record(undefined, "hold");
     return true;
@@ -545,12 +524,8 @@ export function useReminderFlow() {
   }
 
   function retrySpeech() {
-    const saved = speechResultIds.current
-      .map((id) => records.find((record) => record.id === id))
-      .filter((record): record is StoredResult => Boolean(record));
-    if (!saved.length) return;
-    setView((previous) => ({ ...previous, speechError: "" }));
-    speak(saved);
+    setView((previous) => ({ ...previous, playReply: false }));
+    speech.current?.play();
   }
 
   async function chooseContact(contactId: string) {
@@ -582,34 +557,75 @@ export function useReminderFlow() {
     return saved;
   }
 
+  const ownCommand = !commandSession || selectedSession === commandSession;
+  const active = [
+    "loading",
+    "requesting",
+    "connecting",
+    "listening",
+    "finishing",
+    "processing",
+    "saving",
+  ].includes(view.phase);
+  const selectedRecords = records.filter(
+    (record) => (record.sessionId ?? earlierActivity) === selectedSession,
+  );
+  const legacyTurns = new Map<string, Turn>();
+  for (const record of records) {
+    if (record.sessionId || legacyTurns.has(record.commandId)) continue;
+    legacyTurns.set(record.commandId, {
+      id: record.commandId,
+      sessionId: earlierActivity,
+      createdAt: record.createdAt,
+      transcript: record.transcript,
+    });
+  }
+  const sessionTurns =
+    selectedSession === earlierActivity
+      ? [...legacyTurns.values()].reverse()
+      : turns.filter((turn) => turn.sessionId === selectedSession);
+  const visibleView = ownCommand ? view : readyVoice;
+  const latest = sessionTurns.at(-1);
+  const showLatest =
+    visibleView.phase === "ready" && !visibleView.captions.final && latest;
+
   return {
-    view,
-    execution,
-    reportExecution,
-    records,
+    view: showLatest
+      ? {
+          ...visibleView,
+          turnId: latest.id,
+          captions: { final: latest.transcript, interim: "" },
+        }
+      : visibleView,
+    orbCore,
+    execution: ownCommand ? execution : idleExecution,
+    records: selectedRecords,
+    sessions,
+    turns,
+    sessionTurns,
+    hasLegacy: legacyTurns.size > 0,
+    selectedSession,
+    selectSession,
+    selectionError,
+    canSelect:
+      Boolean(selectedSession) &&
+      !selecting &&
+      !["requesting", "connecting", "listening"].includes(view.phase),
+    recorderUnavailable:
+      selecting ||
+      selectedSession === earlierActivity ||
+      (!ownCommand && active),
     contacts,
     addContact,
     chooseContact,
-    savedResult,
     record,
     retry,
     cancel,
     edit,
-    showTranscript,
     retrySpeech,
-    cancelSpeech,
     stop,
     startHold,
     releaseHold,
     cancelHold,
-    active: [
-      "loading",
-      "requesting",
-      "connecting",
-      "listening",
-      "finishing",
-      "processing",
-      "saving",
-    ].includes(view.phase),
   };
 }

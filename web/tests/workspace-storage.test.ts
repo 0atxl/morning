@@ -6,6 +6,8 @@ import {
   commitCommand,
   loadWorkspace,
   recordsForCommand,
+  selectWorkspaceSession,
+  storeTurn,
   updateResult,
   type StoredDraft,
   type StoredReminder,
@@ -52,7 +54,7 @@ function legacyDatabase(record: StoredReminder, receipt: boolean) {
 
 function receipts() {
   return new Promise<unknown[]>((resolve, reject) => {
-    const open = indexedDB.open("morning-guest", 2);
+    const open = indexedDB.open("morning-guest");
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
       const tx = open.result.transaction("commands", "readonly");
@@ -71,7 +73,7 @@ function receipts() {
 
 function putFixture(store: string, record: StoredDraft) {
   return new Promise<void>((resolve, reject) => {
-    const open = indexedDB.open("morning-guest", 2);
+    const open = indexedDB.open("morning-guest");
     open.onerror = () => reject(open.error);
     open.onsuccess = () => {
       const tx = open.result.transaction(store, "readwrite");
@@ -200,4 +202,56 @@ test("a draft-only command survives reload and a locally added contact persists"
     ),
   );
   assert.equal((await receipts()).length, 1);
+});
+
+test("switching sessions before commit keeps the result and transcript with their recording", async () => {
+  const a = (await loadWorkspace()).selectedSession;
+  await storeTurn({
+    id: request.command_id,
+    createdAt: request.now,
+    sessionId: a,
+    transcript: request.transcript,
+  });
+  const { selected: b } = await selectWorkspaceSession();
+  assert.notEqual(a, b);
+  const {
+    records: [email],
+  } = await commitCommand(request, [draft], a);
+  assert.equal(email.kind, "draft");
+  const second = {
+    ...request,
+    command_id: "second",
+    transcript: "Remind me to follow up.",
+  };
+  await storeTurn({
+    id: second.command_id,
+    createdAt: second.now,
+    sessionId: b,
+    transcript: second.transcript,
+  });
+  await commitCommand(second, [reminder], b);
+  const replay = await commitCommand(request, [draft], b);
+  assert.equal(replay.created, false);
+  assert.equal(replay.records[0].sessionId, a);
+  if (email.kind === "draft")
+    await updateResult({ ...email, subject: "Edited subject" });
+  assert.equal((await loadWorkspace()).selectedSession, b);
+  await selectWorkspaceSession(a);
+  const loaded = await loadWorkspace();
+  assert.equal(loaded.selectedSession, a);
+  assert.equal(loaded.sessions.length, 2);
+  assert.deepEqual(
+    loaded.records.filter((result) => result.sessionId === a),
+    [{ ...email, subject: "Edited subject" }],
+  );
+  assert.deepEqual(
+    loaded.records
+      .filter((result) => result.sessionId === b)
+      .map((result) => result.kind),
+    ["reminder"],
+  );
+  assert.deepEqual(
+    loaded.turns.filter((turn) => turn.sessionId === a).map((turn) => turn.id),
+    [request.command_id],
+  );
 });

@@ -10,7 +10,24 @@ import type {
   WorkspaceResult,
 } from "./results.ts";
 
-type SavedMetadata = { commandId: string; createdAt: string };
+export type Session = { id: string; createdAt: string };
+export type Turn = {
+  id: string;
+  sessionId: string;
+  transcript: string;
+  createdAt: string;
+};
+export const earlierActivity = "earlier-activity";
+
+function newSession(): Session {
+  return { id: crypto.randomUUID(), createdAt: new Date().toISOString() };
+}
+
+type SavedMetadata = {
+  commandId: string;
+  createdAt: string;
+  sessionId?: string;
+};
 export type StoredReminder = ReminderResult & SavedMetadata;
 export type StoredDraft = DraftResult & SavedMetadata & { contactId: string };
 export type StoredResult = StoredReminder | StoredDraft;
@@ -35,7 +52,7 @@ function openStore(): Promise<IDBDatabase> {
     }
     let request: IDBOpenDBRequest;
     try {
-      request = indexedDB.open("morning-guest", 2);
+      request = indexedDB.open("morning-guest", 3);
     } catch {
       reject(
         new Error(
@@ -55,6 +72,12 @@ function openStore(): Promise<IDBDatabase> {
         db.createObjectStore("commands", { keyPath: "commandId" });
       if (!db.objectStoreNames.contains("drafts"))
         db.createObjectStore("drafts", { keyPath: "id" });
+      if (!db.objectStoreNames.contains("sessions")) {
+        const first = newSession();
+        db.createObjectStore("sessions", { keyPath: "id" }).add(first);
+        db.createObjectStore("settings").put(first.id, "selectedSession");
+        db.createObjectStore("turns", { keyPath: "id" });
+      }
       if (!db.objectStoreNames.contains("contacts")) {
         const contacts = db.createObjectStore("contacts", { keyPath: "id" });
         EXAMPLE_CONTACTS.forEach((contact) => contacts.add({ ...contact }));
@@ -83,17 +106,26 @@ function openStore(): Promise<IDBDatabase> {
 export async function loadWorkspace(): Promise<{
   records: StoredResult[];
   contacts: GuestContact[];
+  sessions: Session[];
+  turns: Turn[];
+  selectedSession: string;
 }> {
   const db = await openStore();
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction;
     try {
-      tx = db.transaction(["reminders", "drafts", "contacts"], "readonly");
+      tx = db.transaction(
+        ["reminders", "drafts", "contacts", "sessions", "turns", "settings"],
+        "readonly",
+      );
     } catch {
       db.close();
       reject(new Error("Morning couldn't load saved results. Please retry."));
       return;
     }
+    const sessions = tx.objectStore("sessions").getAll();
+    const turns = tx.objectStore("turns").getAll();
+    const selected = tx.objectStore("settings").get("selectedSession");
     const reminders = tx.objectStore("reminders").getAll();
     const drafts = tx.objectStore("drafts").getAll();
     const contacts = tx.objectStore("contacts").getAll();
@@ -105,6 +137,13 @@ export async function loadWorkspace(): Promise<{
       ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
       resolve({
         records,
+        sessions: (sessions.result as Session[]).sort((a, b) =>
+          a.createdAt.localeCompare(b.createdAt),
+        ),
+        turns: (turns.result as Turn[]).sort((a, b) =>
+          a.createdAt.localeCompare(b.createdAt),
+        ),
+        selectedSession: selected.result,
         contacts: (contacts.result as GuestContact[]).sort((a, b) =>
           a.name.localeCompare(b.name),
         ),
@@ -117,9 +156,42 @@ export async function loadWorkspace(): Promise<{
   });
 }
 
+async function writeWorkspace(
+  stores: string[],
+  write: (tx: IDBTransaction) => void,
+) {
+  const db = await openStore();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(stores, "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onabort = tx.onerror = () => reject(storageError());
+      write(tx);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+// Creating and selecting an empty conversation is one durable operation.
+export async function selectWorkspaceSession(id?: string) {
+  const created = id === undefined ? newSession() : undefined;
+  const selected = created?.id ?? id!;
+  await writeWorkspace(["sessions", "settings"], (tx) => {
+    if (created) tx.objectStore("sessions").add(created);
+    tx.objectStore("settings").put(selected, "selectedSession");
+  });
+  return { selected, created };
+}
+
+export async function storeTurn(turn: Turn) {
+  await writeWorkspace(["turns"], (tx) => tx.objectStore("turns").put(turn));
+}
+
 export function recordsForCommand(
   request: CommandRequest,
   actions: readonly CommandAction[],
+  sessionId?: string,
 ): StoredResult[] {
   if (
     !actions.length ||
@@ -131,6 +203,7 @@ export function recordsForCommand(
     );
   return actions.map((action) => {
     const metadata = {
+      ...(sessionId ? { sessionId } : {}),
       commandId: request.command_id,
       createdAt: request.now,
       transcript: request.transcript,
@@ -181,8 +254,9 @@ function receiptFor(
 export async function commitCommand(
   request: CommandRequest,
   actions: readonly CommandAction[],
+  sessionId?: string,
 ): Promise<CommitResult> {
-  const proposed = recordsForCommand(request, actions);
+  const proposed = recordsForCommand(request, actions, sessionId);
   const db = await openStore();
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction;

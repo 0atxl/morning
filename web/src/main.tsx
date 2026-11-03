@@ -10,7 +10,7 @@ async function mountPage() {
       import("./App"),
       import("./styles.css"),
     ]);
-    document.title = "Morning · Guest workspace";
+    document.title = "Morning · Assistant";
     root.render(
       <StrictMode>
         <App />

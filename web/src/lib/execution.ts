@@ -15,22 +15,3 @@ export const idleExecution: ExecutionActivity = {
   status: "Ready",
   running: false,
 };
-
-export const executionStages: {
-  stage: DotStructureState;
-  label: string;
-  name: string;
-  previewOnly?: boolean;
-}[] = [
-  { stage: "ORB", label: "ORB", name: "Ready" },
-  { stage: "STT", label: "STT", name: "Transcription" },
-  {
-    stage: "NOTEPAD",
-    label: "PAD",
-    name: "Meeting minutes",
-    previewOnly: true,
-  },
-  { stage: "PEN", label: "PEN", name: "Correction", previewOnly: true },
-  { stage: "MAIL", label: "MAIL", name: "Email draft" },
-  { stage: "DIAL", label: "DIAL", name: "Reminder" },
-];

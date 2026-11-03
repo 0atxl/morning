@@ -1,155 +1,121 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CalendarClock,
-  Check,
   ChevronDown,
   ChevronRight,
   FileText,
-  SlidersHorizontal,
+  Plus,
   Users,
 } from "lucide-react";
 import { ResultQuickView } from "@/components/result-quick-view";
 import { ContactsDialog } from "@/components/contacts-dialog";
 import { ExecutionActivityView } from "@/components/execution-activity";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { idleExecution, type ExecutionActivity } from "@/lib/execution";
 import { VoiceCommand } from "@/components/voice-command";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { previewStates, type PreviewState } from "@/fixtures/workspace";
-import { useDesignPreview } from "@/fixtures/use-design-preview";
 import { useReminderFlow } from "@/hooks/use-reminder-flow";
 import { useRecorderShortcut } from "@/hooks/use-recorder-shortcut";
 import { canToggleRecorder } from "@/lib/recorder-shortcut";
-import { formatDue, type WorkspaceResult } from "@/lib/results";
+import { earlierActivity, type StoredResult } from "@/lib/reminder-store";
+import { formatDue } from "@/lib/results";
+
+function ResultRow({
+  result,
+  onOpen,
+}: {
+  result: StoredResult;
+  onOpen: (trigger: HTMLButtonElement) => void;
+}) {
+  const Icon = result.kind === "draft" ? FileText : CalendarClock;
+  return (
+    <li>
+      <Button
+        variant="outline"
+        className="result-row"
+        aria-haspopup="dialog"
+        onClick={(event) => onOpen(event.currentTarget)}
+      >
+        <Icon className="result-icon" aria-hidden="true" />
+        <span className="result-name">{result.title}</span>
+        {result.kind === "reminder" && (
+          <time
+            className="result-time"
+            dateTime={result.dueAt}
+            title={formatDue(result, true)}
+          >
+            {formatDue(result)}
+          </time>
+        )}
+        <ChevronRight className="result-chevron" aria-hidden="true" />
+      </Button>
+    </li>
+  );
+}
 
 export function App() {
   const live = useReminderFlow();
-  const design = useDesignPreview();
-  const isPreview = design.scene !== null;
-  const view = isPreview ? design.view : live.view;
+  const { view, selectedSession } = live;
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [panel, setPanel] = useState<"preview" | "contacts" | null>(null);
+  const [contactsOpen, setContactsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const openedRequest = useRef<string | null>(null);
-  const previewHold = useRef(false);
-  const [lastEdited, setLastEdited] = useState<string | null>(null);
   const returnFocus = useRef<HTMLButtonElement | null>(null);
-  const micButton = useRef<HTMLButtonElement | null>(null);
   const contactsButton = useRef<HTMLButtonElement | null>(null);
-  const visibleResults: WorkspaceResult[] = isPreview
-    ? design.results
-    : live.records;
   const selected =
-    visibleResults.find((result) => result.id === selectedId) ?? null;
-  const historyRows = [
-    ...new Map(
-      visibleResults.map(
-        (result) =>
-          [
-            "commandId" in result ? result.commandId : result.id,
-            result,
-          ] as const,
-      ),
-    ).values(),
-  ];
-
-  useEffect(() => {
-    if (!live.savedResult) return;
-    returnFocus.current = micButton.current;
-    setSelectedId(live.savedResult.id);
-  }, [live.savedResult]);
-
-  function preview(next: PreviewState | null) {
-    if (live.active) return;
-    live.cancelSpeech();
-    setSelectedId(null);
-    setLastEdited(null);
-    setPanel(null);
-    previewHold.current = false;
-    design.select(next);
-  }
+    live.records.find((result) => result.id === selectedId) ?? null;
+  const canRecord = () =>
+    !live.recorderUnavailable && canToggleRecorder(view.phase, view.retryAt);
 
   function toggleCapture() {
-    if (!canToggleRecorder(view.phase, view.retryAt)) return;
-    previewHold.current = false;
-    if (isPreview) design.toggle();
-    else if (live.view.phase === "listening") live.stop();
+    if (!canRecord()) return;
+    if (view.phase === "listening") live.stop();
     else void live.record();
   }
 
   useRecorderShortcut(
-    () => {
-      if (!isPreview) return live.startHold();
-      previewHold.current = true;
-      design.start();
-      return true;
-    },
-    () => {
-      if (!isPreview) live.releaseHold();
-      else if (previewHold.current) {
-        previewHold.current = false;
-        design.finish();
-      }
-    },
-    () => {
-      if (!isPreview) live.cancelHold();
-      else if (previewHold.current) {
-        previewHold.current = false;
-        design.select("ready");
-      }
-    },
+    live.startHold,
+    live.releaseHold,
+    live.cancelHold,
     () =>
-      panel === null &&
-      selectedId === null &&
-      view.phase !== "listening" &&
-      canToggleRecorder(view.phase, view.retryAt),
+      !contactsOpen && !selected && view.phase !== "listening" && canRecord(),
   );
 
-  const execution: ExecutionActivity = isPreview
-    ? {
-        ...idleExecution,
-        stages:
-          view.phase === "listening"
-            ? ["STT"]
-            : view.phase === "saved"
-              ? ["DIAL"]
-              : ["ORB"],
-        running: ["listening", "processing"].includes(view.phase),
-        status:
-          view.phase === "listening"
-            ? "Listening"
-            : view.phase === "processing"
-              ? "Interpreting sample command"
-              : view.phase === "saved"
-                ? "Reminder saved"
-                : view.phase === "error"
-                  ? "Request failed"
-                  : view.phase === "clarification"
-                    ? "Clarification needed"
-                    : "Ready",
-      }
-    : live.execution;
-
   useEffect(() => {
-    const requestId = live.execution.requestId;
-    if (isPreview || !requestId || openedRequest.current === requestId) return;
-    openedRequest.current = requestId;
+    const id = live.execution.requestId;
+    if (!id || openedRequest.current === id) return;
+    openedRequest.current = id;
     setActivityOpen(true);
-    // Opening a layout panel never moves focus. A manual close persists for
-    // this request, including retries and further action/speech events.
-  }, [isPreview, live.execution.requestId]);
+  }, [live.execution.requestId]);
 
-  async function saveResult(updated: WorkspaceResult) {
-    if (isPreview) design.save(updated);
-    else await live.edit(updated);
-    setLastEdited(updated.title);
+  const sessionNames = new Map<string, string>();
+  for (const turn of live.turns) {
+    if (!sessionNames.has(turn.sessionId))
+      sessionNames.set(turn.sessionId, turn.transcript);
+  }
+  const sessions = live.sessions
+    .map((session, index) => ({
+      id: session.id,
+      label: `Session ${index + 1}`,
+      excerpt: sessionNames.get(session.id),
+    }))
+    .reverse();
+  if (live.hasLegacy)
+    sessions.push({
+      id: earlierActivity,
+      label: "Earlier activity",
+      excerpt: undefined,
+    });
+  const sessionLabel = sessions.find(
+    (session) => session.id === selectedSession,
+  )?.label;
+
+  const resultsByTurn = new Map<string, StoredResult[]>();
+  for (const result of live.records) {
+    const group = resultsByTurn.get(result.commandId) ?? [];
+    group.push(result);
+    resultsByTurn.set(result.commandId, group);
   }
 
   return (
@@ -159,21 +125,29 @@ export function App() {
           Skip to workspace
         </a>
         <header className="workspace-toolbar">
-          <Button
-            variant="ghost"
-            className="toolbar-control"
-            aria-expanded={historyOpen}
-            aria-controls="history-panel"
-            onClick={() => setHistoryOpen((open) => !open)}
-          >
-            History
-            <ChevronDown />
-          </Button>
-
-          <span className="wordmark" aria-label="Morning guest workspace">
-            Morning
-          </span>
-
+          <div className="history-controls">
+            <Button
+              variant="ghost"
+              className="toolbar-control"
+              aria-expanded={historyOpen}
+              aria-controls="history-panel"
+              onClick={() => setHistoryOpen((open) => !open)}
+            >
+              History <ChevronDown />
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="new-session"
+              title="New session"
+              disabled={!live.canSelect}
+              onClick={() => void live.selectSession()}
+            >
+              <Plus aria-hidden="true" />
+              <span>New session</span>
+            </Button>
+          </div>
+          <span className="wordmark">Morning</span>
           <Button
             variant="ghost"
             className="toolbar-control activity-control"
@@ -181,8 +155,7 @@ export function App() {
             aria-controls="activity-panel"
             onClick={() => setActivityOpen((open) => !open)}
           >
-            Activity
-            <ChevronDown />
+            Activity <ChevronDown />
           </Button>
         </header>
 
@@ -202,102 +175,76 @@ export function App() {
                   <h2 id="history-heading" className="panel-heading">
                     History
                   </h2>
-                  {historyRows.length ? (
-                    <ul className="history-list">
-                      {historyRows.map((result) => (
-                        <li key={result.id}>
-                          <Button
-                            variant="ghost"
-                            className="history-command"
-                            disabled={!isPreview && live.active}
-                            onClick={() => {
-                              if (isPreview)
-                                design.showTranscript(result.transcript);
-                              else live.showTranscript(result.transcript);
-                            }}
-                          >
-                            {result.transcript}
-                          </Button>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="panel-empty">No commands yet.</p>
-                  )}
+                  <ul className="history-list">
+                    {sessions.map((session) => (
+                      <li key={session.id}>
+                        <Button
+                          variant="ghost"
+                          className="history-command"
+                          aria-current={
+                            session.id === selectedSession ? "true" : undefined
+                          }
+                          disabled={!live.canSelect}
+                          title={session.excerpt ?? session.label}
+                          onClick={() => void live.selectSession(session.id)}
+                        >
+                          <span>{session.label}</span>
+                          {session.excerpt && <small>{session.excerpt}</small>}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
                 </aside>
               </CollapsibleContent>
             </div>
           </Collapsible>
           <main id="workspace" className="workspace-main" tabIndex={-1}>
+            {live.selectionError && <p role="alert">{live.selectionError}</p>}
             <VoiceCommand
+              orbCore={live.orbCore}
               view={view}
-              preview={isPreview}
-              primaryRef={micButton}
+              disabled={live.recorderUnavailable}
+              archive={selectedSession === earlierActivity}
               onToggle={toggleCapture}
-              onRetry={() => {
-                if (isPreview) design.retry();
-                else void live.retry();
-              }}
+              onRetry={() => void live.retry()}
               onCancel={live.cancel}
               onRetrySpeech={live.retrySpeech}
-              onChooseContact={(id) => {
-                void live.chooseContact(id);
-              }}
-              onOpenContacts={() => setPanel("contacts")}
+              onChooseContact={(id) => void live.chooseContact(id)}
+              onOpenContacts={() => setContactsOpen(true)}
             />
 
             <section
               className="results-section"
-              aria-labelledby="results-heading"
+              aria-label={`Conversation: ${sessionLabel ?? "Morning"}`}
             >
-              <h2 id="results-heading" className="sr-only">
-                Saved results
-              </h2>
-              {visibleResults.length ? (
-                <ul className="result-list">
-                  {visibleResults.map((result) => (
-                    <li key={result.id}>
-                      <Button
-                        variant="outline"
-                        className="result-row"
-                        aria-haspopup="dialog"
-                        disabled={!isPreview && live.active}
-                        onClick={(event) => {
-                          returnFocus.current = event.currentTarget;
-                          setSelectedId(result.id);
-                        }}
-                      >
-                        {result.kind === "draft" ? (
-                          <FileText
-                            className="result-icon"
-                            aria-hidden="true"
+              {[...live.sessionTurns].reverse().map((turn) => {
+                const results = resultsByTurn.get(turn.id) ?? [];
+                return (
+                  <div className="conversation-turn" key={turn.id}>
+                    {turn.id !== view.turnId && (
+                      <p className="past-transcript">{turn.transcript}</p>
+                    )}
+                    {results.length > 0 && (
+                      <ul className="result-list">
+                        {results.map((result) => (
+                          <ResultRow
+                            key={result.id}
+                            result={result}
+                            onOpen={(trigger) => {
+                              returnFocus.current = trigger;
+                              setSelectedId(result.id);
+                            }}
                           />
-                        ) : (
-                          <CalendarClock
-                            className="result-icon"
-                            aria-hidden="true"
-                          />
-                        )}
-                        <span className="result-name">{result.title}</span>
-                        {result.kind === "reminder" ? (
-                          <time
-                            className="result-time"
-                            dateTime={result.dueAt}
-                            title={formatDue(result, true)}
-                          >
-                            {formatDue(result)}
-                          </time>
-                        ) : null}
-                        <ChevronRight
-                          className="result-chevron"
-                          aria-hidden="true"
-                        />
-                      </Button>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="results-empty">No saved results yet.</p>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })}
+              {!live.records.length && (
+                <p className="results-empty">
+                  No saved results in this session.
+                </p>
               )}
             </section>
           </main>
@@ -312,14 +259,7 @@ export function App() {
                   <h2 id="activity-heading" className="panel-heading">
                     Activity
                   </h2>
-                  {activityOpen ? (
-                    <ExecutionActivityView
-                      execution={execution}
-                      preview={isPreview}
-                      results={visibleResults}
-                      lastEdited={lastEdited}
-                    />
-                  ) : null}
+                  <ExecutionActivityView execution={live.execution} />
                 </aside>
               </CollapsibleContent>
             </div>
@@ -327,93 +267,29 @@ export function App() {
         </div>
 
         <footer className="workspace-footer">
-          {!isPreview ? (
-            <Button
-              ref={contactsButton}
-              variant="ghost"
-              size="sm"
-              className="preview-trigger"
-              disabled={live.active}
-              onClick={() => setPanel("contacts")}
-            >
-              <Users />
-              Contacts
-            </Button>
-          ) : null}
-          <Popover
-            open={panel === "preview"}
-            onOpenChange={(open) => setPanel(open ? "preview" : null)}
+          <Button
+            ref={contactsButton}
+            variant="ghost"
+            size="sm"
+            className="contacts-trigger"
+            onClick={() => setContactsOpen(true)}
           >
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="preview-trigger"
-                disabled={live.active}
-              >
-                <SlidersHorizontal />
-                Design preview
-                <ChevronDown />
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent
-              className="preview-popover"
-              align="start"
-              side="top"
-              sideOffset={10}
-              collisionPadding={16}
-              aria-label="Design preview states"
-            >
-              <h2 className="popover-heading">Design preview</h2>
-              <p className="preview-description">
-                Sample states use no microphone or providers. Preview edits
-                reset on reload.
-              </p>
-              <div className="preview-options" aria-label="Preview state">
-                <Button
-                  variant="ghost"
-                  className="preview-option"
-                  aria-pressed={!isPreview}
-                  onClick={() => preview(null)}
-                >
-                  <span>Guest workspace</span>
-                  {!isPreview ? <Check aria-hidden="true" /> : null}
-                </Button>
-                {previewStates.map((state) => (
-                  <Button
-                    key={state.value}
-                    variant="ghost"
-                    className="preview-option"
-                    aria-pressed={design.scene === state.value}
-                    onClick={() => preview(state.value)}
-                  >
-                    <span>{state.label}</span>
-                    {design.scene === state.value ? (
-                      <Check aria-hidden="true" />
-                    ) : null}
-                  </Button>
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
-          <span className="fixture-notice">
-            {isPreview ? "Sample data" : "Guest workspace"}
-          </span>
+            <Users /> Contacts
+          </Button>
         </footer>
       </div>
-
       <ResultQuickView
         result={selected}
-        results={visibleResults}
+        results={live.records}
         onSelect={setSelectedId}
-        onSave={saveResult}
+        onSave={live.edit}
         onRestoreFocus={() => returnFocus.current?.focus()}
       />
       <ContactsDialog
-        open={panel === "contacts" && !isPreview}
+        open={contactsOpen}
         contacts={live.contacts}
-        pendingClarification={live.view.phase === "clarification"}
-        onOpenChange={(open) => setPanel(open ? "contacts" : null)}
+        pendingClarification={view.phase === "clarification"}
+        onOpenChange={setContactsOpen}
         onAdd={live.addContact}
         onRestoreFocus={() => contactsButton.current?.focus()}
       />
