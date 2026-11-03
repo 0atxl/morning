@@ -74,3 +74,20 @@ sudo -u morning-deploy env \
 Do not pass the word `previous` as the SHA; use the full 40-character commit. Rollback changes only the active app release. Provider configuration stays on the VM. No smoke check, provider call or test suite is part of deployment or rollback. Approve those checks separately when needed.
 
 Root-owned deployment tooling and unit files are installed during bootstrap, not overwritten by app artifacts. After changing these files, repeat the administrator bootstrap with the same public key before using the updated deployment workflow.
+
+## Owner reminder email
+
+Morning can email one configured inbox automatically at a reminder's due time. Gmail acts as both sender and recipient. The public guest workspace never chooses a mail recipient. Only the browser paired with the private owner link schedules emails.
+
+Turn on Google 2-Step Verification and create a dedicated [Google app password](https://myaccount.google.com/apppasswords) for Morning. On your trusted laptop, from the checkout containing this feature, run:
+
+```bash
+scp deploy/configure-reminder-email.py good@100.120.127.73:configure-reminder-email.py
+ssh -t good@100.120.127.73 'sudo python3 ./configure-reminder-email.py'
+```
+
+Enter the Gmail address and app password at the VM prompts. The script stores them in a root-only environment file, enables persistent queue storage, restarts the API, and prints a private pairing link. Open that link once in your own browser. Keep it out of chat, recordings and shared links. Removing the site data forgets the pairing. Run the script again with the same account to update the app password or recover the pairing link.
+
+Create a new reminder and wait for **Reminder email scheduled** before closing the tab. Editing its title or time updates the schedule when the server accepts the change. The dashboard retries an unacknowledged schedule while open and on return. The server persists accepted schedules across restarts and checks every five seconds. Gmail failures retry after five minutes. Inbox arrival depends on Gmail and the VM's outbound access to TCP 587. SMTP can deliver a duplicate if the connection or server fails immediately after Gmail accepts a message but before the success is recorded.
+
+The chime is independent of email. Leave Morning open and interact with the page so the browser allows sound. If a tab was suspended, overdue reminders are shown on return. A due occurrence is claimed once across tabs. The visible alert has a manual **Play chime** button.

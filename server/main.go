@@ -26,17 +26,19 @@ func main() {
 		deepgramKey: deepgramKey,
 		groqKey:     groqKey,
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	mailbox := newReminderMailbox()
+	go mailbox.run(ctx)
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           newAPI(p, time.Now),
+		Handler:           newAPIWithMailbox(p, time.Now, mailbox),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      25 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)

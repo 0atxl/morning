@@ -1,3 +1,4 @@
+import { ownerKey, type MailSchedule } from "./reminder-alerts.ts";
 import type { CommandAction, CommandRequest } from "./command-api.ts";
 import {
   EXAMPLE_CONTACTS,
@@ -28,7 +29,8 @@ type SavedMetadata = {
   createdAt: string;
   sessionId?: string;
 };
-export type StoredReminder = ReminderResult & SavedMetadata;
+export type StoredReminder = ReminderResult &
+  SavedMetadata & { mailRevision?: number };
 export type StoredDraft = DraftResult & SavedMetadata & { contactId: string };
 export type StoredResult = StoredReminder | StoredDraft;
 type Receipt = { commandId: string; reminderId?: string; draftId?: string };
@@ -261,7 +263,10 @@ export async function commitCommand(
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction;
     try {
-      tx = db.transaction(["reminders", "drafts", "commands"], "readwrite");
+      tx = db.transaction(
+        ["reminders", "drafts", "commands", "settings"],
+        "readwrite",
+      );
     } catch {
       db.close();
       reject(storageError());
@@ -311,11 +316,12 @@ export async function commitCommand(
             if (!existingReceipt)
               commands.add(receiptFor(request.command_id, existing));
           } else {
-            proposed.forEach((record) =>
-              tx
-                .objectStore(record.kind === "draft" ? "drafts" : "reminders")
-                .add(record),
-            );
+            proposed.forEach((record) => {
+              if (record.kind === "reminder") queueOwnerMail(tx, record);
+              tx.objectStore(
+                record.kind === "draft" ? "drafts" : "reminders",
+              ).add(record);
+            });
             commands.add(receiptFor(request.command_id, proposed));
             outcome = { records: proposed, created: true };
           }
@@ -326,8 +332,14 @@ export async function commitCommand(
     // either all complete or all abort before rendering or speaking success.
     tx.oncomplete = () => {
       db.close();
-      if (outcome) resolve(outcome);
-      else reject(storageError());
+      if (outcome) {
+        if (
+          outcome.created &&
+          outcome.records.some((r) => r.kind === "reminder")
+        )
+          signalReminderChange();
+        resolve(outcome);
+      } else reject(storageError());
     };
     tx.onabort = tx.onerror = () => {
       db.close();
@@ -344,7 +356,7 @@ export async function updateResult(
     let tx: IDBTransaction;
     try {
       tx = db.transaction(
-        result.kind === "draft" ? "drafts" : "reminders",
+        result.kind === "draft" ? ["drafts"] : ["reminders", "settings"],
         "readwrite",
       );
     } catch {
@@ -370,12 +382,22 @@ export async function updateResult(
         commandId: original.commandId,
         createdAt: original.createdAt,
       } as StoredResult;
+      if (updated.kind === "reminder" && original.kind === "reminder") {
+        updated.mailRevision = original.mailRevision;
+        if (
+          original.title !== updated.title ||
+          original.dueAt !== updated.dueAt
+        )
+          queueOwnerMail(tx, updated);
+      }
       store.put(updated);
     };
     tx.oncomplete = () => {
       db.close();
-      if (updated) resolve(updated);
-      else reject(storageError());
+      if (updated) {
+        if (updated.kind === "reminder") signalReminderChange();
+        resolve(updated);
+      } else reject(storageError());
     };
     tx.onabort = tx.onerror = () => {
       db.close();
@@ -431,4 +453,69 @@ export async function addGuestContact(
       reject(new Error(message));
     };
   });
+}
+
+function signalReminderChange() {
+  if (typeof window !== "undefined")
+    window.dispatchEvent(new Event("morning-reminder-change"));
+}
+
+function queueOwnerMail(tx: IDBTransaction, reminder: StoredReminder) {
+  if (!ownerKey()) return;
+  reminder.mailRevision = Math.max(
+    Date.now(),
+    (reminder.mailRevision ?? 0) + 1,
+  );
+  const mail: MailSchedule = {
+    id: reminder.id,
+    title: reminder.title,
+    dueAt: reminder.dueAt,
+    revision: reminder.mailRevision,
+  };
+  tx.objectStore("settings").put(mail, "mail:" + reminder.id);
+}
+
+export async function acknowledgeReminderMail(job: MailSchedule) {
+  await writeWorkspace(["settings"], (tx) => {
+    const store = tx.objectStore("settings");
+    const key = "mail:" + job.id;
+    const read = store.get(key);
+    read.onsuccess = () => {
+      if (read.result?.revision === job.revision) store.delete(key);
+    };
+  });
+}
+
+// One read/write transaction claims each occurrence across all tabs. The due
+// timestamp, rather than a single flag, also covers edits that reschedule it.
+export async function pollReminders(now: number) {
+  const due: StoredReminder[] = [];
+  let next = now + 60_000;
+  let pending: MailSchedule[] = [];
+  await writeWorkspace(["reminders", "settings"], (tx) => {
+    const settings = tx.objectStore("settings");
+    const mail = settings.getAll(IDBKeyRange.bound("mail:", "mail;"));
+    mail.onsuccess = () => {
+      pending = mail.result as MailSchedule[];
+    };
+    const records = tx.objectStore("reminders").getAll();
+    records.onsuccess = () => {
+      for (const record of records.result as StoredReminder[]) {
+        const time = Date.parse(record.dueAt);
+        if (!Number.isFinite(time)) continue;
+        if (time > now) {
+          next = Math.min(next, time);
+          continue;
+        }
+        const key = "rang:" + record.id;
+        const previous = settings.get(key);
+        previous.onsuccess = () => {
+          if (previous.result === time) return;
+          settings.put(time, key);
+          due.push(record);
+        };
+      }
+    };
+  });
+  return { due, next, pending };
 }

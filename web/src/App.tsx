@@ -7,6 +7,7 @@ import {
   Plus,
   Users,
 } from "lucide-react";
+import { ReminderAlerts } from "@/components/reminder-alerts";
 import { ResultQuickView } from "@/components/result-quick-view";
 import { ContactsDialog } from "@/components/contacts-dialog";
 import { ExecutionActivityView } from "@/components/execution-activity";
@@ -199,6 +200,7 @@ export function App() {
             </div>
           </Collapsible>
           <main id="workspace" className="workspace-main" tabIndex={-1}>
+            <ReminderAlerts />
             {live.selectionError && <p role="alert">{live.selectionError}</p>}
             <VoiceCommand
               orbCore={live.orbCore}

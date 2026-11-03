@@ -22,7 +22,7 @@ Keep provider keys in the server environment. The clonable product includes its 
 
 The microphone streams to Deepgram for live captions using a temporary token from Go. Stop sends the final transcript and relevant contacts to Go, which uses Groq to interpret the command. The browser saves validated reminders and drafts together in IndexedDB, then speaks the saved result using browser speech synthesis.
 
-Saved records, contacts and manual edits stay in this browser profile. Quick View supports editing, copying and plain-text download. Drafts remain unsent. Reminder alerts and background notifications are pending.
+Saved records, contacts and manual edits stay in this browser profile. Quick View supports editing, copying and plain-text download. Drafts remain unsent. A due reminder shows an alert and plays a short chime while the dashboard is open and browser audio is enabled. The owner can also [configure Gmail reminders](deploy/README.md#owner-reminder-email). Once the server accepts the schedule, it can send the email even after the browser closes.
 
 The backend also implements reminder corrections, calendar-event responses, meeting minutes and optional ElevenLabs MP3 speech. Their browser integrations are pending, including calendar `.ics` download. PAD and PEN in Design preview are sample states. Search and account sync are deferred. The landing page's presentation link currently opens a placeholder page.
 

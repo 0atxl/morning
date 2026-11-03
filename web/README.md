@@ -32,7 +32,7 @@ The History and Activity panels start closed. Activity opens when a finalized co
 
 The glass orb measures volume from the recording stream. Its inner colors swell with speech and settle during pauses. Captions sit below the mic control. Reduced motion keeps the colored listening state and plain captions.
 
-The client accepts at most one `create_reminder` and one `draft_email` action, or zero actions with a clarification. It validates the complete response before any save. Browser integration for reminder corrections, calendar events and meeting minutes is pending. Reminder alerts and background notifications are also pending. The landing page opens at `/`, and **Try Morning** links to `/app`. This frontend change has not been exercised with a browser, mic or live provider.
+The client accepts at most one `create_reminder` and one `draft_email` action, or zero actions with a clarification. It validates the complete response before any save. Browser integration for reminder corrections, calendar events and meeting minutes is pending. Due reminders show an alert and chime while Morning is open. A suspended or closed tab catches up when it returns. Paired owner browsers can also schedule private Gmail reminders. The landing page opens at `/`, and **Try Morning** links to `/app`. This frontend change has not been exercised with a browser, mic or live provider.
 
 ## Guest contacts and drafts
 

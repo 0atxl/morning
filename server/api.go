@@ -80,6 +80,10 @@ type api struct {
 }
 
 func newAPI(p *providers, clock func() time.Time) http.Handler {
+	return newAPIWithMailbox(p, clock, nil)
+}
+
+func newAPIWithMailbox(p *providers, clock func() time.Time, mailbox *reminderMailbox) http.Handler {
 	a := &api{
 		providers: p,
 		clock:     clock,
@@ -99,6 +103,8 @@ func newAPI(p *providers, clock func() time.Time) http.Handler {
 			handler = a.command
 		case "/api/speech":
 			handler = a.speak
+		case "/api/reminder-email":
+			handler = mailbox.schedule
 		case "/api/minutes":
 			handler = a.minutes
 		default:

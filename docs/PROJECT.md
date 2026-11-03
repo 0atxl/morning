@@ -70,7 +70,7 @@ The table describes what the guest UI calls in the shipped source. The verificat
 
 | Capability | Where it works | Behavior and limits |
 | --- | --- | --- |
-| Reminders | Guest dashboard | Create a reminder and edit its title or due time in Quick View. Morning has no due-time alarm or background notification. |
+| Reminders | Guest dashboard | Create a reminder and edit its title or due time in Quick View. Due reminders show an in-app alert and chime while the dashboard is open. Owner email requires the Gmail setup in the deployment guide. |
 | Email drafts | Guest dashboard | Review, edit, copy or download an unsent draft. Morning has no mail delivery integration. |
 | Contact clarification | Guest dashboard | Choose among matching contacts before saving. A missing contact or missing reminder time requires a complete revised recording. |
 | Spoken confirmation | Guest dashboard | Hear the browser read back a new save and retry playback separately. |
