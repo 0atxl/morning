@@ -691,6 +691,7 @@ export function useReminderFlow() {
   async function cancel() {
     if (saving.current || view.phase === "saving" || view.phase === "loading")
       return;
+    cancelSpeech();
     generation.current++;
     capture.current?.cancel();
     capture.current = null;
