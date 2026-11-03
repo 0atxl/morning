@@ -1,5 +1,6 @@
 import { useRef, useState, type FormEvent } from "react";
 import {
+  ArrowUpRight,
   CalendarClock,
   Check,
   ChevronDown,
@@ -33,6 +34,7 @@ import {
 import {
   downloadResult,
   formatDue,
+  gmailComposeUrl,
   localInputDate,
   resultText,
   type WorkspaceResult,
@@ -339,10 +341,7 @@ function ResultContent({
               </div>
             </dl>
             <p className="draft-body">{result.body}</p>
-            <p className="delivery-notice">
-              Email delivery isn't available. Copy this draft to send it
-              yourself.
-            </p>
+            <p className="delivery-notice">Review and send in Gmail.</p>
           </>
         ) : (
           <div className="reminder-details">
@@ -418,6 +417,19 @@ function ResultContent({
                 <Download />
                 Download
               </Button>
+              {result.kind === "draft" ? (
+                <Button asChild variant="outline">
+                  <a
+                    href={gmailComposeUrl(result)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Send via Gmail (opens in a new tab)"
+                  >
+                    <ArrowUpRight aria-hidden="true" />
+                    Send via Gmail
+                  </a>
+                </Button>
+              ) : null}
             </>
           )}
         </div>

@@ -22,6 +22,17 @@ export type DraftResult = ResultBase & {
 // Browser presentation types. These are not the server's command response.
 export type WorkspaceResult = ReminderResult | DraftResult;
 
+export function gmailComposeUrl(draft: DraftResult) {
+  const query = new URLSearchParams({
+    view: "cm",
+    fs: "1",
+    to: draft.to,
+    su: draft.subject,
+    body: draft.body,
+  });
+  return `https://mail.google.com/mail/?${query}`;
+}
+
 export function formatDue(reminder: ReminderResult, full = false) {
   const date = new Date(reminder.dueAt);
   const day = new Intl.DateTimeFormat("en", {

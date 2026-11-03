@@ -341,7 +341,7 @@ export function useReminderFlow() {
       question: "",
       options: [],
       deliveryNotice: hasDraft
-        ? "Email delivery isn't available. You can copy the saved draft."
+        ? "Open the draft to review and send in Gmail."
         : "",
       status: outcome.created
         ? hasDraft && hasReminder
