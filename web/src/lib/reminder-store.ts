@@ -47,7 +47,9 @@ export function previousTurnContext(
       (turn) =>
         turn.sessionId === sessionId &&
         !turn.lookupContext &&
-        (turn.lookup?.status === "answered" || turn.minutes || turn.reply),
+        (turn.lookup?.status === "answered" ||
+          turn.minutes ||
+          (!turn.lookup && turn.reply)),
     )
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
   if (!previous) return;

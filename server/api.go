@@ -36,6 +36,24 @@ type previousTurnContext struct {
 	Reply      string `json:"reply,omitempty"`
 }
 
+// Optional memory fields must be strings, not explicit JSON null values.
+func (p *previousTurnContext) UnmarshalJSON(data []byte) error {
+	type fields previousTurnContext
+	var value fields
+	if err := decodeObject(data, &value); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	_ = json.Unmarshal(data, &raw)
+	for _, field := range raw {
+		if string(field) == "null" {
+			return errors.New("previous_turn fields must be strings")
+		}
+	}
+	*p = previousTurnContext(value)
+	return nil
+}
+
 type draftContext struct {
 	ID        string `json:"id"`
 	Subject   string `json:"subject"`

@@ -794,6 +794,7 @@ export function useReminderFlow() {
       if (lookupContext && !activeLookup && latestTurn?.lookupContext) {
         const cleared = { ...latestTurn };
         delete cleared.lookupContext;
+        delete cleared.reply;
         await storeTurn(cleared);
         if (mounted.current)
           setTurns((previous) =>
@@ -920,8 +921,9 @@ export function useReminderFlow() {
       busy.current = true;
       saving.current = true;
       setView((previous) => ({ ...previous, phase: "saving" }));
-      const cancelled = { ...latest, reply: "Search cancelled." };
+      const cancelled = { ...latest };
       delete cancelled.lookupContext;
+      delete cancelled.reply;
       try {
         await storeTurn(cancelled);
         if (mounted.current)

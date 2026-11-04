@@ -172,3 +172,18 @@ func TestPendingBriefingContractRejectsActionAndMemoryContexts(t *testing.T) {
 		t.Fatal("pending place lookup accepted action context")
 	}
 }
+
+func TestPreviousTurnFieldsRequireStrings(t *testing.T) {
+	for _, key := range []string{"transcript", "topic", "answer", "reply"} {
+		for _, value := range []string{"null", "1", "{}", "[]"} {
+			var request commandRequest
+			if decodeObject([]byte(`{"previous_turn":{"`+key+`":`+value+`}}`), &request) == nil {
+				t.Fatalf("accepted non-string %s=%s", key, value)
+			}
+		}
+	}
+	var request commandRequest
+	if err := decodeObject([]byte(`{"previous_turn":{"topic":"A saved topic"}}`), &request); err != nil || request.PreviousTurn.Topic != "A saved topic" {
+		t.Fatalf("optional string fields rejected: %v", err)
+	}
+}
