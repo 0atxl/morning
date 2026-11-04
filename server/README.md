@@ -4,7 +4,7 @@ The browser streams microphone audio directly to Deepgram, then sends the comple
 
 The browser commits actions to IndexedDB using `command_id` to prevent duplicate saves. After a new save, it can request a short spoken confirmation from the optional speech endpoint. The existing browser voice provides a fallback. Drafts stay editable and unsent.
 
-A calendar command returns one event for a client to preview and export. The shipped dashboard supports reminders, email drafts, corrections, read-only lookups and spoken replies. Reminder Quick View can export a calendar entry. Recording meeting minutes and scheduling calendar events still need browser integration. The endpoint examples below describe the backend contracts.
+A calendar command returns validated event data. The dashboard saves only its start as a reminder and exports a one-minute calendar marker. It does not retain the event end, schedule a full-duration event or sync calendar changes. The endpoint examples below describe the backend contracts.
 
 ## Local startup
 
@@ -87,11 +87,15 @@ The URL assumes containerized audio such as MediaRecorder WebM/Opus. A browser s
 
 Token issuance allows 30 requests per client IP and 300 total requests per server process per UTC minute. Commands allow 60 per IP and 600 total per minute. Speech allows 60 per IP and 600 total per minute. Attempts count even if a provider fails. `429` responses include a `Retry-After` header in seconds. Limits reset at minute boundaries and process restart. They are not shared between server instances. Provider account quotas are separate and are not changed by these application limits. An upstream HTTP 429 returns a distinct `voice_provider_rate_limited`, `command_provider_rate_limited` or `minutes_provider_rate_limited` error with a retry delay.
 
-For a loopback TCP peer, the limiter uses a valid `CF-Connecting-IP` supplied by Cloudflare Tunnel through nginx. The production origin must remain loopback-only. Direct non-loopback requests use their peer IP, and `X-Forwarded-For` is always ignored. This gives public visitors separate allowances while preserving the global cap. Visitors sharing one public IP still share that IP's allowance. A different ingress must sanitize its client identity before using this setup.
+For a loopback TCP peer, the limiter uses a valid `CF-Connecting-IP` supplied by Cloudflare Tunnel through nginx. The production origin must remain loopback-only. Direct non-loopback requests use their peer IP. Both `X-Forwarded-For` and `X-Real-IP` are ignored. This gives public visitors separate allowances while preserving the global cap. Visitors sharing one public IP still share that IP's allowance. A different ingress must sanitize its client identity before using this setup.
 
 Groq quotas are separate and shared across the provider organization. `command_provider_rate_limited` identifies a Groq refusal, while `rate_limited` identifies Morning's own public limit. A provider 429 never triggers generation repair or an automatic provider retry. Go forwards a valid provider `Retry-After` as whole seconds, rounding fractional values up and accepting HTTP dates. Missing/invalid timing uses a 60-second fallback, not a guarantee that the account quota resets then. Provider response bodies and raw headers stay out of errors and logs. The browser retains the transcript and uses the returned wait before retry. Check the account's [Groq limits](https://console.groq.com/docs/rate-limits) to distinguish request/token minute and daily limits.
 
 ## Interpret a command
+
+Optional `previous_turn` contains only `transcript`, `topic`, `answer` and `reply`, each an optional string. Their limits are respectively 8192, 300, 4000 and 1000 UTF-8 bytes. The browser selects the most recent answered lookup, minutes or conversational reply in the active session, skips pending questions and action-only turns, and truncates on UTF-8 boundaries. A lookup's topic is its saved `query` string. This context is untrusted historical data, never permission to repeat an action. Writes still use the current transcript, explicit saved-item contexts and the existing command receipt. Pending place replies omit `previous_turn`, contacts and action contexts.
+
+Reminder actions may include `repeat: "daily"`, `"weekly"` or `"weekdays"`. The model schema requires `repeat`, using `""` for a one-off or ordinary reschedule. Go also accepts its omission from older provider fixtures. Empty values are omitted from the public action and from a new saved reminder. An ordinary reschedule preserves existing recurrence. Clearing recurrence and correct occurrence advancement remain pending lifecycle work.
 
 `POST /api/commands`, with `Content-Type: application/json`:
 
@@ -254,7 +258,7 @@ The record ID comes from the browser's snapshot. Groq receives the saved time an
 
 An unclear time also returns an empty array and one question. Save a correction in one IndexedDB transaction over reminders and command receipts. First check the correction's receipt. On a replay, use its saved reminder ID. On a new correction, read the existing reminder by `reminder_id`, update only its due time, and add the receipt. If the record is missing or its due time has changed since the supplied snapshot, abort and refresh the context. An HTTP retry reuses the full request, including its ID and snapshot. Update the visible row and speak the new time after a successful new commit. The draft can keep its edited subject and body throughout.
 
-### Calendar event for download
+### Calendar data and reminder markers
 
 Send the usual command request to `POST /api/commands`.
 
@@ -283,7 +287,7 @@ Example `200 OK` response
 }
 ```
 
-An event is a standalone action. Both timestamps have second precision and explicit offsets. Display them in the returned IANA timezone. Go checks that the start is in the future and the end follows it. A spoken duration advances the start by elapsed time, including across a daylight-saving transition.
+The event payload is a standalone action. Both timestamps have second precision and explicit offsets. Go checks that the start is in the future and the end follows it. A spoken duration advances the start by elapsed time, including across a daylight-saving transition. The dashboard converts this payload to `create_reminder` at `start`, discards `end` and saves no full-duration calendar event.
 
 If the speaker omits the duration or finish time, a clarification can return HTTP 200 with this body.
 
@@ -291,9 +295,9 @@ If the speaker omits the duration or finish time, a clarification can return HTT
 {"command_id":"review-1","actions":[],"clarification":"How long should the project review last?"}
 ```
 
-A missing date or ambiguous start time also requires a question. Offer the download only for a completed event. "Remind me in ten minutes to schedule a meeting" uses the existing reminder action.
+A missing date or ambiguous start time also requires a question. Offer the reminder's calendar-marker download only after the reminder is saved. "Remind me in ten minutes to schedule a meeting" uses the existing reminder action.
 
-For a local `.ics` file, write one `VEVENT` in a `VCALENDAR` with `VERSION:2.0` and a `PRODID`. Use the escaped title as `SUMMARY`, a stable `UID` derived from the command ID, and a UTC `DTSTAMP`. For this example the UTC event times are `DTSTART:20261106T093000Z` and `DTEND:20261106T100000Z`. Use CRLF line endings and fold long lines at 75 octets. A second download can reuse the saved event without calling Groq. [iCalendar file format](https://www.rfc-editor.org/rfc/rfc5545)
+The existing reminder serializer writes one `VEVENT` in a `VCALENDAR`, with an escaped title, stable UID, UTC timestamps, CRLF line endings and folded lines. For this example the dashboard's one-minute marker is `DTSTART:20261106T093000Z` to `DTEND:20261106T093100Z`, regardless of the API's validated end. A second download uses the saved reminder without calling Groq. Calendar copies do not sync with Morning edits. [iCalendar file format](https://www.rfc-editor.org/rfc/rfc5545)
 
 ### Saving and retries
 
@@ -351,7 +355,7 @@ Example `200 OK` response
 }
 ```
 
-All four fields are present. Empty sections are `[]`. Each task has a plain-text description, a nullable owner and a nullable deadline. A stated deadline keeps the speaker's wording. Quick View can edit these fields and use the edited values for a local `.txt` export. Retain the transcript if the request fails.
+All four fields are present. Empty sections are `[]`. Each task has `task`, `owner` and `deadline`; owner and deadline are required fields with a string or null value. A stated deadline keeps the speaker's wording. The backend limits summary to 800 Unicode characters, decisions/questions/tasks to 500 each and owner/deadline to 200 each. Provider-only `source` quotes are removed before returning the response. This endpoint returns minutes directly, without a command action or clarification envelope. The browser stores them on `Turn.minutes`; browser response validation and editing remain pending. Retain the transcript if the request fails.
 
 A blank transcript returns `400 Bad Request`.
 
@@ -400,7 +404,7 @@ Show `error.message` and retain the transcript. Command errors include `command_
 
 Command and contact IDs allow 1 to 128 ASCII letters, digits, hyphens or underscores. Transcripts allow up to 8192 UTF-8 bytes. Supply at most 20 relevant contacts, each with a name up to 200 characters and a plain email address up to 254 characters. Reminder titles and draft subjects allow up to 200 characters. Draft bodies allow up to 8000 characters and can include line breaks. The whole command body allows 64 KiB to accommodate a saved draft snapshot. Groq may return up to 4096 completion tokens. Keys must stay in the server environment, without `VITE_` prefixes.
 
-When a generated command fails validation, Go makes at most one correction attempt using the original request and a fixed validation reason. Both attempts share the command's 22-second deadline, and the corrected result must pass the same validation before any lookup or proposed browser save. Rate limits, outages and timeouts do not trigger an automatic retry. A persistent command validation failure returns JSON with HTTP 422 so a proxy's gateway error page cannot replace the explanation. Voice, speech and minutes behavior is unchanged.
+When a generated command fails validation, Go makes at most one correction attempt using the original request and a fixed validation reason. Both attempts and any subsequent lookup share the command's 22-second deadline. Lookup work has a 16-second subdeadline, bounded by the command time remaining. Place extraction and candidate selection each have an eight-second subdeadline. The command-provider HTTP client permits at most 20 seconds per call; the lookup HTTP client permits at most 16 seconds. nginx permits 30 seconds of upstream read inactivity; the browser JSON deadline is 30 seconds and Go's response write timeout is 35 seconds. These limits are not additive. The corrected result must pass the same validation before any lookup or proposed browser save. Rate limits, outages and timeouts do not trigger an automatic retry. A persistent command validation failure returns JSON with HTTP 422 so a proxy's gateway error page cannot replace the explanation. Voice, speech and minutes behavior is unchanged.
 
 ## Conversational replies and draft revisions
 
@@ -430,7 +434,9 @@ The API initializes one `newLookupService(providers, clock)` per API instance an
 {"kind":"hotels","terms":"","place":"Jaipur railway station","today":false}
 ```
 
-Kinds are `hotels`, `weather`, `news`, `web` and `time`. Weather and time use only `place`. News and web require concise `terms`; news can also supply a location and `today`. Hotel search uses only the named city or landmark. Send these minimal arguments to providers, never the conversation, contacts, reminder IDs or a visitor identity. Groq selects exact evidence from bounded public snippets. Go checks those excerpts against the returned sources, builds the result, and never converts source data into actions or another tool request. Hotel results omit distances, rates and availability.
+Kinds are `hotels`, `weather`, `news`, `web`, `time`, `wiki` and `briefing`. Weather, time and hotels use only `place` with empty `terms` and `today=false`. News and web require concise `terms`; news can also supply a location and `today`. Wiki uses `terms`, an empty `place` and `today=false`. Briefing uses `place`, empty `terms` and `today=true`. Send these minimal arguments to providers, never the conversation, contacts, reminder IDs or a visitor identity. Go never converts source data into actions or another tool request. Hotel results omit distances, rates and availability. Wikipedia provider bounds and ambiguity, search evidence quality, and briefing city/freshness handling still need review.
+
+Successful lookup snapshots use a string `query`, `status` of `answered` or `empty`, `answer`, `speech`, `sources` and `looked_up_at`. There is no `title` field on `LookupResult`. The browser accepts up to 2000 Unicode characters in the answer, up to 240 in speech and at most three sources. Wiki and briefing answers may contain plain-text LF line breaks. Answered weather, time and briefing snapshots require `timezone` and `data_time`. Answered results need at least one source; empty results have none. A pending place question uses `lookup_context.query` for hotels, weather, time or briefing, with the same `today` rule as above. News and wiki do not use that place continuation. Lookup failures use the existing `{command_id,error:{code,message,retryable}}` envelope with an optional `Retry-After` header; they contain no executable actions. Parsing this shape does not establish source quality or freshness.
 
 The command response always echoes `command_id` and has `actions: []` for a lookup. It contains either `lookup` with `clarification: null`, or a `clarification` with `lookup_context`. When location is missing, the question is `Which city or landmark?`. The browser stores that question and context in the same conversation. Its next spoken place reply sends `lookup_context` with the new command's transcript, ID, time and timezone, without contacts or saved-item context. Go extracts a location through the constrained place-only schema before calling `withLookupPlace`; the original lookup kind cannot become a write action. For an ambiguous city, extraction retains the known city when the reply supplies only a region/country, and can replace it when another city is spoken. A country with multiple time zones requires a city. Weather freshness, news windows and time answers use the server clock.
 

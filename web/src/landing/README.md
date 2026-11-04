@@ -1,6 +1,6 @@
 # Morning landing page
 
-The landing page opens at `/`. **Try Morning** is an ordinary link to `/app`, which mounts the guest dashboard. A separate Vite development entry is available at `/landing.html`.
+The landing page opens at `/`. **Try Morning** is an ordinary link to `/app`, which mounts the guest dashboard. Both routes use the shared `index.html` entry and bootstrap.
 
 `LandingPage` takes a `guestHref` so route integration only needs to supply the agreed dashboard URL. The page reuses the existing shadcn/ui Button. Its styles are scoped to `.morning-landing`; the dashboard and recorder are separate.
 

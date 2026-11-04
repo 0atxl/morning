@@ -558,12 +558,11 @@ export function PresentationPage() {
                   export flow are still to come.
                 </p>
               </Row>
-              <Row title="New calendar events">
+              <Row title="Calendar reminder markers">
                 <p>
-                  The API validates calendar-event start times and durations,
-                  and the dashboard saves spoken events as reminders with
-                  one-click .ics and Google Calendar export. Two-way calendar
-                  sync is still future work.
+                  The dashboard saves an event's start as a reminder and exports
+                  a one-minute calendar marker. The event end is not retained.
+                  Full-duration scheduling and calendar sync remain future work.
                 </p>
               </Row>
               <Row title="Personal integrations, later">
