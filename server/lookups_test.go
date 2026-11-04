@@ -275,6 +275,64 @@ func TestLookupCountryWithMultipleZonesAsksForCity(t *testing.T) {
 	}
 }
 
+// Synthetic candidate metadata, with no live requests. The same ranking rule
+// must work across countries; names and country codes never select the winner.
+func TestLookupRankedMajorCityDoesNotTieWithUnpopulatedNamesake(t *testing.T) {
+	for _, tc := range []struct{ name, region, country, code, zone, feature string }{
+		{"New Delhi", "National Capital Territory of Delhi", "India", "IN", "Asia/Kolkata", "PPLC"},
+		{"Amsterdam", "North Holland", "Netherlands", "NL", "Europe/Amsterdam", "PPLC"},
+		{"Birmingham", "England", "United Kingdom", "GB", "Europe/London", "PPLA2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			primary := map[string]any{"name": tc.name, "admin1": tc.region, "country": tc.country, "country_code": tc.code, "timezone": tc.zone, "feature_code": tc.feature, "population": 3000000, "latitude": 28.6, "longitude": 77.2}
+			other := map[string]any{"name": tc.name, "admin1": "Illinois", "country": "United States", "country_code": "US", "timezone": "America/Chicago", "feature_code": "PPL", "latitude": 39.8, "longitude": -89.6}
+			body, _ := json.Marshal(map[string]any{"results": []any{primary, other}})
+			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
+				if r.URL.Query().Get("name") != tc.name || r.URL.Query().Get("countryCode") != "" {
+					t.Fatal("a city-specific or inferred country filter was added")
+				}
+				return lookupJSONResponse(200, string(body)), nil
+			})
+			places, err := s.geocode(context.Background(), tc.name)
+			if err != nil || len(places) != 1 || places[0].CountryCode != tc.code {
+				t.Fatalf("ranked major city became a namesake question: %+v %v", places, err)
+			}
+			// Explicit qualifiers override the dominant result, including a
+			// small place with missing population in a different country.
+			s = lookupFixtureService(t, func(*http.Request) (*http.Response, error) { return lookupJSONResponse(200, string(body)), nil })
+			places, err = s.geocode(context.Background(), tc.name+", Illinois, United States")
+			if err != nil || len(places) != 1 || places[0].CountryCode != "US" {
+				t.Fatalf("ranking overrode an explicit location: %+v %v", places, err)
+			}
+		})
+	}
+}
+
+func TestLookupRankingKeepsComparableOrUncertainCitiesAmbiguous(t *testing.T) {
+	for _, tc := range []struct {
+		name, primaryFeature, otherFeature string
+		primaryPopulation, otherPopulation int
+	}{
+		{"comparable cities", "PPLC", "PPLA", 3000000, 2000000},
+		{"unpopulated administrative competitor", "PPLC", "PPLA2", 3000000, 0},
+		{"unknown competitor type", "PPLC", "", 3000000, 0},
+		{"unknown primary population", "PPLC", "PPL", 0, 0},
+		{"ordinary primary without administrative evidence", "PPL", "PPL", 3000000, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{"results": []any{
+				map[string]any{"name": "Shared City", "admin1": "Region A", "country": "Country A", "country_code": "AA", "timezone": "Europe/London", "feature_code": tc.primaryFeature, "population": tc.primaryPopulation, "latitude": 51.5, "longitude": 0},
+				map[string]any{"name": "Shared City", "admin1": "Region B", "country": "Country B", "country_code": "BB", "timezone": "America/Chicago", "feature_code": tc.otherFeature, "population": tc.otherPopulation, "latitude": 40, "longitude": -90},
+			}})
+			s := lookupFixtureService(t, func(*http.Request) (*http.Response, error) { return lookupJSONResponse(200, string(body)), nil })
+			places, err := s.geocode(context.Background(), "Shared City")
+			if err != nil || len(places) != 2 {
+				t.Fatalf("uncertain place was guessed: %+v %v", places, err)
+			}
+		})
+	}
+}
+
 func TestLookupGeocodingKeepsAndEnforcesAllPlaceQualifiers(t *testing.T) {
 	for _, tc := range []struct {
 		place string
