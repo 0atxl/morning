@@ -236,6 +236,9 @@ func TestLookupPlaceAmbiguityAndCurrentTokyoClock(t *testing.T) {
 	} {
 		t.Run(tc.place, func(t *testing.T) {
 			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() == groqCommandURL {
+					return lookupPlaceResponse(`{"candidate_index":null}`), nil
+				}
 				if r.URL.Host != "geocoding-api.open-meteo.com" {
 					t.Fatal("time only needs geocoding")
 				}
@@ -275,9 +278,9 @@ func TestLookupCountryWithMultipleZonesAsksForCity(t *testing.T) {
 	}
 }
 
-// Synthetic candidate metadata, with no live requests. The same ranking rule
-// must work across countries; names and country codes never select the winner.
-func TestLookupRankedMajorCityDoesNotTieWithUnpopulatedNamesake(t *testing.T) {
+// Geocoding preserves candidates for the LLM. Go does not pick a winner from
+// population thresholds, name/country exceptions or administrative codes.
+func TestLookupGeocodingPreservesCandidatesAndExplicitQualifiers(t *testing.T) {
 	for _, tc := range []struct{ name, region, country, code, zone, feature string }{
 		{"New Delhi", "National Capital Territory of Delhi", "India", "IN", "Asia/Kolkata", "PPLC"},
 		{"Amsterdam", "North Holland", "Netherlands", "NL", "Europe/Amsterdam", "PPLC"},
@@ -294,8 +297,8 @@ func TestLookupRankedMajorCityDoesNotTieWithUnpopulatedNamesake(t *testing.T) {
 				return lookupJSONResponse(200, string(body)), nil
 			})
 			places, err := s.geocode(context.Background(), tc.name)
-			if err != nil || len(places) != 1 || places[0].CountryCode != tc.code {
-				t.Fatalf("ranked major city became a namesake question: %+v %v", places, err)
+			if err != nil || len(places) != 2 || places[0].CountryCode != tc.code {
+				t.Fatalf("geocoding prematurely selected a candidate: %+v %v", places, err)
 			}
 			// Explicit qualifiers override the dominant result, including a
 			// small place with missing population in a different country.
@@ -308,7 +311,7 @@ func TestLookupRankedMajorCityDoesNotTieWithUnpopulatedNamesake(t *testing.T) {
 	}
 }
 
-func TestLookupRankingKeepsComparableOrUncertainCitiesAmbiguous(t *testing.T) {
+func TestLookupGeocodingDoesNotDecideFromPopulationOrFeatureCodes(t *testing.T) {
 	for _, tc := range []struct {
 		name, primaryFeature, otherFeature string
 		primaryPopulation, otherPopulation int

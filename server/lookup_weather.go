@@ -15,6 +15,7 @@ import (
 const (
 	openMeteoGeocodingURL = "https://geocoding-api.open-meteo.com/v1/search"
 	openMeteoWeatherURL   = "https://api.open-meteo.com/v1/forecast"
+	geocodingResultCap    = 5
 )
 
 type lookupPlace struct {
@@ -49,7 +50,7 @@ func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlac
 	// Open-Meteo applies a comma-separated region/country qualifier before its
 	// result cap. Sending only the city loses that filter and returns namesakes.
 	// Still check every supplied qualifier against the returned place below.
-	args := url.Values{"name": {strings.Join(parts, ", ")}, "count": {"5"}, "language": {"en"}, "format": {"json"}}
+	args := url.Values{"name": {strings.Join(parts, ", ")}, "count": {fmt.Sprint(geocodingResultCap)}, "language": {"en"}, "format": {"json"}}
 	if hindiText(place) {
 		args.Set("language", "hi")
 	}
@@ -84,30 +85,9 @@ func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlac
 		if qualified && !seen[label] {
 			matches = append(matches, candidate)
 			seen[label] = true
-		}
-	}
-	// Preserve the provider's relevance order. A dominant major city may have
-	// ordinary namesakes whose population is omitted; that omission alone does
-	// not make them equally relevant to a ranked capital/administrative city.
-	// Competing major cities or incomplete administrative records still ask.
-	if len(matches) > 1 && matches[0].Population >= 100000 {
-		primary := matches[0]
-		administrativeCity := primary.FeatureCode == "PPLC" || primary.FeatureCode == "PPLCD" || primary.FeatureCode == "PPLG" || strings.HasPrefix(primary.FeatureCode, "PPLA")
-		dominant := true
-		for _, candidate := range matches[1:] {
-			if candidate.Population == 0 {
-				ordinaryLocality := candidate.FeatureCode == "PPL" || candidate.FeatureCode == "PPLL" || candidate.FeatureCode == "PPLX"
-				if !administrativeCity || !ordinaryLocality {
-					dominant = false
-				}
-				continue
+			if len(matches) == geocodingResultCap {
+				break
 			}
-			if float64(primary.Population) < 20*float64(candidate.Population) {
-				dominant = false
-			}
-		}
-		if dominant {
-			matches = matches[:1]
 		}
 	}
 	return matches, nil
@@ -120,6 +100,15 @@ func (s *lookupService) placeLookup(ctx context.Context, q lookupQuery, now time
 	}
 	if len(places) == 0 {
 		return lookupQuestion(q, "I couldn't resolve that place. Which city and country?"), nil
+	}
+	if len(places) > 1 {
+		selected, err := s.selectLookupPlace(ctx, q.Place, places)
+		if err != nil {
+			return lookupOutcome{}, err
+		}
+		if selected >= 0 {
+			places = []lookupPlace{places[selected]}
+		}
 	}
 	if len(places) > 1 {
 		var labels []string
