@@ -24,6 +24,8 @@ You need Go 1.22 or newer, Node.js 22.12 or newer, and server-side Deepgram and 
 
 Keep provider keys in the server environment. The clonable product includes its source, lockfile, licenses, fixtures and setup guides.
 
+If Morning reports a Groq request/token limit, the provider quota must reset or be changed in the owner account. The error preserves the transcript for retry and uses the provider's retry timing when available. Groq quotas are shared across its organization; Morning's own public lookup limits do not increase that quota. See [Groq's rate-limit guide](https://console.groq.com/docs/rate-limits). The command instructions are kept compact to reduce repeated input-token overhead.
+
 ## What is connected
 
 The microphone streams to Deepgram for live captions using a temporary token from Go. Stop sends the final transcript, relevant contacts and focused reminder or draft context to Go. Groq interprets the request, writes or revises the email, or generates a conversational reply. New drafts are prompted to include a developed request and useful detail from the user's words. The browser saves validated results before requesting an ElevenLabs spoken reply. Browser speech provides a fallback. **Play reply** remains available to replay the current reply without rerunning its action.
