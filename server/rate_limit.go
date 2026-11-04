@@ -15,9 +15,13 @@ func clientAddress(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		peer := net.ParseIP(host)
-		client := net.ParseIP(r.Header.Get("CF-Connecting-IP"))
-		if peer != nil && peer.IsLoopback() && client != nil {
-			return client.String()
+		if peer != nil && peer.IsLoopback() {
+			if client := net.ParseIP(r.Header.Get("CF-Connecting-IP")); client != nil {
+				return client.String()
+			}
+			if client := net.ParseIP(r.Header.Get("X-Real-IP")); client != nil {
+				return client.String()
+			}
 		}
 	}
 	return r.RemoteAddr

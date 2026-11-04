@@ -80,10 +80,10 @@ The table describes what the guest UI calls in the shipped source. The verificat
 | Spoken draft revisions | Guest dashboard | Ask for a fuller message, another tone or a changed subject. Groq revises the saved subject and body. The browser updates the same draft and preserves its recipient and related reminder. Stale snapshots abort. |
 | Greetings and help | Guest dashboard | Groq generates replies to greetings and capability questions. The reply stays in the conversation, is available for playback and creates no reminder or draft. |
 | Reminder calendar export | Guest dashboard | Quick View downloads an `.ics` file or opens a prefilled Google Calendar entry for review. Both use a one-minute marker at the saved due time. Later Morning edits do not sync to the calendar copy. |
-| New calendar events | Go API event data only | Go can return `create_calendar_event` with start, end and timezone. Spoken event scheduling is not connected to the dashboard. [Event validation](../server/validation.go) |
+| New calendar events | Guest dashboard and Go API | Go returns `create_calendar_event` with validated start, end and timezone, and the dashboard saves the scheduled event as a reminder with `.ics` and Google Calendar export. [Event validation](../server/validation.go) |
 | Meeting minutes | Go API only | `POST /api/minutes` accepts a completed transcript and returns a summary, decisions, action items and open questions. The dashboard has no meeting recorder, minutes editor or minutes download. [Minutes handler](../server/minutes.go) |
 | ElevenLabs playback | Guest dashboard and Go API | A configured `POST /api/speech` can return Flash v2.5 MP3 audio. Voice access depends on the provider plan. The guest dashboard falls back to browser speech. [Speech handler](../server/speech.go) |
-| Search | Unavailable | Neither the guest dashboard nor the API implements search. |
+| Read-only voice lookups | Guest dashboard and Go API | Ask in English, Hindi or Hinglish for weather and local time (Open-Meteo) or hotels, news and web facts (Tavily MCP). Results save a snapshot with source links on the conversation turn. [Lookup handler](../server/lookups.go) |
 
 ## My contribution
 
@@ -108,9 +108,11 @@ Edit `server/.env` with your own settings. The Go process reads its environment 
 | Variable | Required for local startup? | Purpose |
 | --- | --- | --- |
 | `DEEPGRAM_API_KEY` | Yes | Grant short-lived transcription tokens. |
-| `GROQ_API_KEY` | Yes | Interpret voice commands and meeting transcripts. |
+| `GROQ_API_KEY` | Yes | Interpret voice commands, lookup evidence and meeting transcripts. |
+| `TAVILY_API_KEY` | Optional | Enable read-only hotel, news and web lookups via Tavily MCP. Weather and time work without it. |
 | `LISTEN_ADDR` | Optional | Override the default API address of `127.0.0.1:8080`. |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | Optional, set together | Enable the server's MP3 speech endpoint. |
+| `MORNING_GMAIL_ADDRESS`, `MORNING_GMAIL_APP_PASSWORD`, `MORNING_REMINDER_OWNER_KEY` | Optional, set together | Enable owner-paired automatic reminder emails (minimum 32-char owner key). |
 
 In the same terminal, load the file and start Go.
 
@@ -148,7 +150,9 @@ These historical Actions records cover specific revisions. Compilation, service 
 | [Build and Azure deployment · 41641704878](https://github.com/0atxl/morning/actions/runs/41641704878) | `7ac288f5466248fe4905bf6e2d2cdeef8e105c9c` | Go compilation, TypeScript checking, Vite build and packaging succeeded. The Azure receiver logged activation of this SHA. The workflow ran no fixtures, browser checks or live-provider calls. |
 | [Later build and deployment · 41653257686](https://github.com/0atxl/morning/actions/runs/41653257686) | `92c714ea9629819751aab16afc3b2b83c95045b6` | Compilation and production activation succeeded. This run did not execute tests or establish microphone, audible playback or inbox delivery behavior. |
 | [Demo fixes and presentation deployment · 41686806532](https://github.com/0atxl/morning/actions/runs/41686806532) | `a178bbacfe586a1b5f3f671d062ff16560f268e3` | Compilation and activation succeeded. The workflow ran no tests or browser/provider checks. It predates the voice-edit, conversational-reply and calendar-export changes. |
+| [Backend and web fixtures · 41694952219](https://github.com/0atxl/morning/actions/runs/41694952219) | `0e180dfac13c528c62eb8f5705d1d8aedc476186` | Go fixture suite (48 tests, 149 subtests) and isolated Node browser-logic suite (47 tests) passed with zero skips. |
+| [Lookup, speech and Hindi fixtures · 41742148454](https://github.com/0atxl/morning/actions/runs/41742148454) | `ad81331a6df6d05579414925bc87f5a3017a05e9` | Go fixture suite (87 tests, 181 subtests) and isolated Node browser-logic suite (65 tests) passed, covering reminders, drafts, owner mail, Hindi/Hinglish and read-only lookups with offline fixtures. |
 
-The fixture run predates email drafts and the guest dashboard. The repository contains later cases for compound commands, browser storage and the additional API endpoints, but these runs give no result for those cases. [Manual fixture workflow](../.github/workflows/backend-tests.yml) · [Backend cases](../server/) · [Frontend cases](../web/tests/)
+The offline fixture runs cover Go and browser logic up to `ad81331` without live provider calls. [Manual fixture workflow](../.github/workflows/backend-tests.yml) · [Backend cases](../server/) · [Frontend cases](../web/tests/)
 
 There is no recorded live browser verification for this release. The slides walkthrough follows the shipped source. A physical mic producing captions through Deepgram, Groq returning both actions, the browser speaking after save, and the edited draft surviving refresh remain unverified end to end. No app, test suite, smoke check or provider call was run to prepare this guide.

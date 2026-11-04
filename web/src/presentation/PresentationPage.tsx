@@ -450,11 +450,12 @@ export function PresentationPage() {
                 interpretation, saving and playback events.
               </p>
             </Row>
-            <Row title="Start a conversation">
+            <Row title="Start a conversation or ask a read-only question">
               <p>
-                I can say hello or ask what Morning can do. Groq generates the
-                reply in natural language. The reply stays in History and is
-                available for speech playback without creating a task.
+                I can say hello, ask what Morning can do, or ask a read-only
+                question in English, Hindi or Hinglish for weather, local time,
+                hotels, news or web facts. Lookup answers cite their sources and
+                stay separate from saved reminders and drafts.
               </p>
             </Row>
             <Row title="Keep conversations separate">
@@ -559,17 +560,18 @@ export function PresentationPage() {
               </Row>
               <Row title="New calendar events">
                 <p>
-                  The API supports calendar-event data. I want to connect new
-                  event scheduling to the dashboard with an explicit start and
-                  duration. Existing reminders already offer calendar export.
+                  The API validates calendar-event start times and durations,
+                  and the dashboard saves spoken events as reminders with
+                  one-click .ics and Google Calendar export. Two-way calendar
+                  sync is still future work.
                 </p>
               </Row>
               <Row title="Personal integrations, later">
                 <p>
-                  After local use and sync, I want to explore search and
-                  approved personal tools. Any new action needs clear permission
-                  and a visible result. These integrations are not part of
-                  today's demo.
+                  Read-only voice lookups for weather, local time, hotels, news
+                  and web facts work in today's guest demo. Approved write
+                  integrations with external personal tools remain future work
+                  requiring explicit permission and a visible result.
                 </p>
               </Row>
             </Module>

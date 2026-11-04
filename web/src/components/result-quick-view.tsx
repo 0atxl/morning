@@ -6,11 +6,13 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ClipboardList,
   Copy,
   Download,
   FileText,
   Pencil,
   Search,
+  Sun,
   Volume2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -34,12 +36,15 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+  deadlineInstant,
   downloadResult,
   formatDue,
   gmailComposeUrl,
   googleCalendarUrl,
   localInputDate,
+  minutesComposeUrl,
   resultText,
+  type MeetingMinutes,
   type WorkspaceResult,
 } from "@/lib/results";
 import { safeLookupLink, type LookupResult } from "@/lib/lookup-result";
@@ -51,6 +56,7 @@ type Props = {
   onSave: (result: WorkspaceResult) => Promise<void>;
   onRestoreFocus: () => void;
   onPlayReply: (text: string, language?: "en" | "hi") => void;
+  onCreateReminder?: (title: string, dueAt: string) => Promise<unknown>;
 };
 
 export function ResultQuickView({
@@ -60,6 +66,7 @@ export function ResultQuickView({
   onSave,
   onRestoreFocus,
   onPlayReply,
+  onCreateReminder,
 }: Props) {
   const content = useRef<HTMLDivElement>(null);
   const index = results.findIndex((item) => item.id === result?.id);
@@ -107,9 +114,15 @@ export function ResultQuickView({
         <div className="quick-view-header">
           <DialogTitle className="quick-view-title">
             {result?.kind === "lookup" ? (
-              <Search aria-hidden="true" />
+              result.lookup.kind === "briefing" ? (
+                <Sun aria-hidden="true" />
+              ) : (
+                <Search aria-hidden="true" />
+              )
             ) : result?.kind === "draft" ? (
               <FileText aria-hidden="true" />
+            ) : result?.kind === "minutes" ? (
+              <ClipboardList aria-hidden="true" />
             ) : (
               <CalendarClock aria-hidden="true" />
             )}
@@ -156,6 +169,7 @@ export function ResultQuickView({
             result={result}
             onSave={onSave}
             onPlayReply={onPlayReply}
+            onCreateReminder={onCreateReminder}
           />
         ) : null}
       </DialogContent>
@@ -167,10 +181,12 @@ function ResultContent({
   result,
   onSave,
   onPlayReply,
+  onCreateReminder,
 }: {
   result: WorkspaceResult;
   onSave: Props["onSave"];
   onPlayReply: Props["onPlayReply"];
+  onCreateReminder?: Props["onCreateReminder"];
 }) {
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -188,7 +204,7 @@ function ResultContent({
   const [body, setBody] = useState(result.kind === "draft" ? result.body : "");
 
   function beginEdit() {
-    if (result.kind === "lookup") return;
+    if (result.kind === "lookup" || result.kind === "minutes") return;
     setTitle(result.title);
     if (result.kind === "reminder") setDue(localInputDate(result.dueAt));
     else {
@@ -203,7 +219,13 @@ function ResultContent({
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!editing || savingRef.current || result.kind === "lookup") return;
+    if (
+      !editing ||
+      savingRef.current ||
+      result.kind === "lookup" ||
+      result.kind === "minutes"
+    )
+      return;
     setActionError("");
     let updated: WorkspaceResult;
     if (result.kind === "reminder") {
@@ -343,6 +365,11 @@ function ResultContent({
           </fieldset>
         ) : result.kind === "lookup" ? (
           <LookupContent lookup={result.lookup} />
+        ) : result.kind === "minutes" ? (
+          <MinutesContent
+            minutes={result.minutes}
+            onCreateReminder={onCreateReminder}
+          />
         ) : result.kind === "draft" ? (
           <>
             <dl className="draft-metadata">
@@ -367,6 +394,16 @@ function ResultContent({
             <p className="reminder-due">
               <time dateTime={result.dueAt}>{formatDue(result, true)}</time>
             </p>
+            {result.repeat && (
+              <p className="field-hint" style={{ fontWeight: 500 }}>
+                Repeats:{" "}
+                {result.repeat === "daily"
+                  ? "Daily"
+                  : result.repeat === "weekdays"
+                    ? "Every weekday"
+                    : "Weekly"}
+              </p>
+            )}
             <p className="field-hint">{result.timezone}</p>
             <p className="field-hint">
               Calendar export creates a one-minute event. Later edits in Morning
@@ -440,6 +477,27 @@ function ResultContent({
                 >
                   <Volume2 /> Play reply
                 </Button>
+              ) : result.kind === "minutes" ? (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => onPlayReply(result.minutes.summary, "en")}
+                  >
+                    <Volume2 /> Play summary
+                  </Button>
+                  <Button asChild variant="outline">
+                    <a
+                      href={minutesComposeUrl(result.minutes)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label="Email minutes via Gmail (opens in a new tab)"
+                    >
+                      <ArrowUpRight aria-hidden="true" />
+                      Email minutes
+                    </a>
+                  </Button>
+                </>
               ) : (
                 <Button type="button" variant="outline" onClick={beginEdit}>
                   <Pencil />
@@ -584,6 +642,135 @@ function LookupContent({ lookup }: { lookup: LookupResult }) {
             );
           })}
         </ul>
+      )}
+    </div>
+  );
+}
+
+function MinutesContent({
+  minutes,
+  onCreateReminder,
+}: {
+  minutes: MeetingMinutes;
+  onCreateReminder?: Props["onCreateReminder"];
+}) {
+  const [addedItems, setAddedItems] = useState<Record<number, boolean>>({});
+
+  return (
+    <div className="minutes-details">
+      <div className="field">
+        <p className="detail-label">Summary</p>
+        <p className="draft-body">{minutes.summary}</p>
+      </div>
+
+      {minutes.decisions && minutes.decisions.length > 0 && (
+        <div className="field">
+          <p className="detail-label">Decisions</p>
+          <ul className="lookup-sources" aria-label="Decisions">
+            {minutes.decisions.map((decision, index) => (
+              <li
+                key={index}
+                className="field-hint"
+                style={{ listStyleType: "disc", marginLeft: "1.25rem" }}
+              >
+                {decision}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {minutes.action_items && minutes.action_items.length > 0 && (
+        <div className="field">
+          <p className="detail-label">Action Items</p>
+          <ul className="lookup-sources" aria-label="Action items">
+            {minutes.action_items.map((item, index) => (
+              <li
+                key={index}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "0.5rem 0.75rem",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)",
+                  gap: "0.5rem",
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p style={{ fontWeight: 500 }}>{item.task}</p>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: "0.75rem",
+                      marginTop: "0.25rem",
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    {item.owner && (
+                      <span className="field-hint">
+                        Owner: <strong>{item.owner}</strong>
+                      </span>
+                    )}
+                    {item.deadline && (
+                      <span className="field-hint">
+                        Deadline: <strong>{item.deadline}</strong>
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {onCreateReminder && (
+                  <Button
+                    type="button"
+                    variant={addedItems[index] ? "ghost" : "outline"}
+                    size="sm"
+                    disabled={addedItems[index]}
+                    onClick={async () => {
+                      const title = item.owner
+                        ? `${item.task} (${item.owner})`
+                        : item.task;
+                      const dueAt = deadlineInstant(item.deadline);
+                      try {
+                        await onCreateReminder(title, dueAt);
+                        setAddedItems((prev) => ({ ...prev, [index]: true }));
+                      } catch {}
+                    }}
+                    style={{ flexShrink: 0 }}
+                  >
+                    {addedItems[index] ? (
+                      <>
+                        <Check size={14} aria-hidden="true" />
+                        Added
+                      </>
+                    ) : (
+                      <>
+                        <CalendarClock size={14} aria-hidden="true" />
+                        + Reminder
+                      </>
+                    )}
+                  </Button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {minutes.open_questions && minutes.open_questions.length > 0 && (
+        <div className="field">
+          <p className="detail-label">Open Questions</p>
+          <ul className="lookup-sources" aria-label="Open questions">
+            {minutes.open_questions.map((question, index) => (
+              <li
+                key={index}
+                className="field-hint"
+                style={{ listStyleType: "circle", marginLeft: "1.25rem" }}
+              >
+                {question}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );

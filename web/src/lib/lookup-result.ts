@@ -2,7 +2,7 @@ import { object, RequestError } from "./command-api.ts";
 import { validSpeechLanguage, type SpeechLanguage } from "./language.ts";
 
 export type LookupQuery = {
-  kind: "hotels" | "weather" | "news" | "web" | "time";
+  kind: "hotels" | "weather" | "news" | "web" | "time" | "wiki" | "briefing";
   terms: string;
   place: string;
   today: boolean;
@@ -56,11 +56,54 @@ export function parseLookupContext(data: unknown): LookupContext {
 // Progress copy only. Go/Groq still own intent classification and validation.
 export function lookupProgress(transcript: string, context?: LookupContext) {
   return (
-    Boolean(context) ||
-    /\b(?:weather|hotels?|headlines?|news|search|look\s+up|mausam|khabar|samachar|dhoondho)\b|मौसम|होटल|खबर|समाचार|कितने बजे|\b(?:latest|stable)\b.*\b(?:release|version)\b|\bwhat(?:'s|\s+is)?\s+(?:the\s+)?time\b/i.test(
+    continuesLookupContext(transcript, context) ||
+    /\b(?:weather|hotels?|headlines?|news|search|look\s+up|wiki|wikipedia|briefing|morning\s+briefing|who\s+(?:was|is)|tell\s+me\s+about|summar(?:y|ize)|mausam|khabar|samachar|dhoondho)\b|ब्रीफिंग|मौसम|होटल|खबर|समाचार|कितने बजे|जानकारी|के\s+बारे\s+में|\b(?:latest|stable)\b.*\b(?:release|version)\b|\bwhat(?:'s|\s+is)?\s+(?:the\s+)?time\b/i.test(
       transcript,
     )
   );
+}
+
+export function continuesLookupContext(
+  transcript: string,
+  context?: LookupContext,
+): boolean {
+  if (!context) return false;
+  if (
+    /^\s*(?:(?:please|actually|can you|could you|no|maybe)[,.\s]+)*(?:remind\s+me\b|(?:set|create|add|schedule|book)\b|(?:draft|write|compose)\b|(?:make|move|change|reschedule|update|edit|shorten|expand|revise|rewrite)\s+(?:it|that|the|my)\b)/i.test(
+      transcript,
+    ) ||
+    /^\s*(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you|cancel|never\s*mind|stop|what\s+can\s+you\s+do|help\b|नमस्ते|हैलो|धन्यवाद|रद्द\s+करो|क्या\s+कर\s+सकते)/i.test(
+      transcript,
+    ) ||
+    /याद\s+दिला|yaad\s+dila|रिमाइंडर|(?:ईमेल|ड्राफ्ट)\s*(?:लिख|बना|बदल)|(?:उसे|उसको|इसे|इसको)\s+.+\s+कर\s*(?:दो|दें)/i.test(
+      transcript,
+    )
+  ) {
+    return false;
+  }
+  const wantsWeather =
+    /\b(?:weather|temperature|forecast|mausam)\b|मौसम|तापमान/i.test(transcript);
+  const wantsTime =
+    /\bwhat(?:'s|\s+is)?\s+(?:the\s+)?(?:local\s+)?time\b|\bcurrent\s+time\b|कितने\s+बजे|क्या\s+समय|\bkitne\s+baje\b/i.test(
+      transcript,
+    );
+  const wantsHotels = /\bhotels?\b|होटल/i.test(transcript);
+  const wantsNews =
+    /\b(?:headlines?|news|khabar|samachar)\b|खबर|समाचार/i.test(transcript);
+  const wantsWeb =
+    /\b(?:latest|stable)\b.*\b(?:release|version)\b|\b(?:search\s+for|look\s+up)\b/i.test(
+      transcript,
+    );
+  if (
+    wantsNews ||
+    wantsWeb ||
+    (wantsWeather && context.query.kind !== "weather") ||
+    (wantsTime && context.query.kind !== "time") ||
+    (wantsHotels && context.query.kind !== "hotels")
+  ) {
+    return false;
+  }
+  return true;
 }
 
 // Store the entire snapshot in its originating conversation. History and Play
@@ -160,11 +203,11 @@ export function parseLookupResult(data: unknown): LookupResult {
     ]) ||
     !validSpeechLanguage(value.reply_language) ||
     typeof value.kind !== "string" ||
-    !["hotels", "weather", "news", "web", "time"].includes(value.kind) ||
+    !["hotels", "weather", "news", "web", "time", "wiki"].includes(value.kind) ||
     typeof value.status !== "string" ||
     !["answered", "empty"].includes(value.status) ||
     !text(value.query, 430) ||
-    !text(value.answer, 1000) ||
+    !text(value.answer, 2000) ||
     !text(value.speech, 240) ||
     !timestamp(value.looked_up_at) ||
     !Array.isArray(value.sources) ||

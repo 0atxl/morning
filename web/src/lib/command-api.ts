@@ -25,12 +25,19 @@ export type CommandRequest = {
   };
   selected_draft_id?: string;
   lookup_context?: LookupContext;
+  previous_turn?: {
+    transcript?: string;
+    topic?: string;
+    answer?: string;
+    reply?: string;
+  };
 };
 
 export type ReminderAction = {
   type: "create_reminder";
   title: string;
   due_at: string;
+  repeat?: "daily" | "weekly" | "weekdays";
 };
 
 export type DraftAction = {
@@ -43,6 +50,7 @@ export type RescheduleAction = {
   type: "reschedule_reminder";
   reminder_id: string;
   due_at: string;
+  repeat?: "daily" | "weekly" | "weekdays";
 };
 export type UpdateDraftAction = {
   type: "update_draft";
@@ -91,7 +99,7 @@ export async function postJSON(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     cache: "no-store",
-    signal: AbortSignal.any([signal, AbortSignal.timeout(25_000)]),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
   });
   const data: unknown = await response.json().catch(() => null);
   if (!response.ok) {
@@ -324,8 +332,13 @@ export function parseCommandResponse(
     if (action.type === "create_reminder") {
       if (
         Object.keys(action).some(
-          (key) => !["type", "title", "due_at"].includes(key),
+          (key) => !["type", "title", "due_at", "repeat"].includes(key),
         ) ||
+        (action.repeat !== undefined &&
+          action.repeat !== "" &&
+          action.repeat !== "daily" &&
+          action.repeat !== "weekly" &&
+          action.repeat !== "weekdays") ||
         typeof action.title !== "string" ||
         !action.title.trim() ||
         [...action.title].length > 200 ||
@@ -344,6 +357,42 @@ export function parseCommandResponse(
         type: "create_reminder",
         title: action.title.trim(),
         due_at: action.due_at,
+        ...(action.repeat
+          ? { repeat: action.repeat as "daily" | "weekly" | "weekdays" }
+          : {}),
+      });
+    } else if (action.type === "create_calendar_event") {
+      if (
+        value.actions.length !== 1 ||
+        Object.keys(action).some(
+          (key) =>
+            !["type", "title", "start", "end", "timezone"].includes(key),
+        ) ||
+        typeof action.title !== "string" ||
+        !action.title.trim() ||
+        [...action.title].length > 200 ||
+        typeof action.start !== "string" ||
+        !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d$/.test(
+          action.start,
+        ) ||
+        !Number.isFinite(Date.parse(action.start)) ||
+        Date.parse(action.start) <= Date.parse(request.now) ||
+        typeof action.end !== "string" ||
+        !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d$/.test(
+          action.end,
+        ) ||
+        !Number.isFinite(Date.parse(action.end)) ||
+        Date.parse(action.end) <= Date.parse(action.start) ||
+        action.timezone !== request.timezone
+      ) {
+        throw new RequestError(
+          "Morning returned an invalid calendar event. Nothing was saved. Please retry.",
+        );
+      }
+      actions.push({
+        type: "create_reminder",
+        title: action.title.trim(),
+        due_at: action.start,
       });
     } else if (action.type === "reschedule_reminder") {
       if (
@@ -353,8 +402,13 @@ export function parseCommandResponse(
         (request.selected_reminder_id &&
           action.reminder_id !== request.selected_reminder_id) ||
         Object.keys(action).some(
-          (key) => !["type", "reminder_id", "due_at"].includes(key),
+          (key) => !["type", "reminder_id", "due_at", "repeat"].includes(key),
         ) ||
+        (action.repeat !== undefined &&
+          action.repeat !== "" &&
+          action.repeat !== "daily" &&
+          action.repeat !== "weekly" &&
+          action.repeat !== "weekdays") ||
         typeof action.due_at !== "string" ||
         !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d$/.test(
           action.due_at,
@@ -369,6 +423,9 @@ export function parseCommandResponse(
         type: "reschedule_reminder",
         reminder_id: request.reminder_context.id,
         due_at: action.due_at,
+        ...(action.repeat
+          ? { repeat: action.repeat as "daily" | "weekly" | "weekdays" }
+          : {}),
       });
     } else if (action.type === "update_draft") {
       if (

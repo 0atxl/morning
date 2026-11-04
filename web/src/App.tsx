@@ -3,14 +3,18 @@ import {
   CalendarClock,
   ChevronDown,
   ChevronRight,
+  ClipboardList,
   FileText,
   Plus,
   Users,
   Search,
+  Sun,
+  Trash2,
 } from "lucide-react";
 import { ReminderAlerts } from "@/components/reminder-alerts";
 import { ResultQuickView } from "@/components/result-quick-view";
 import { ContactsDialog } from "@/components/contacts-dialog";
+import { MeetingMinutesDialog } from "@/components/minutes-dialog";
 import { ExecutionActivityView } from "@/components/execution-activity";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
 import { VoiceCommand } from "@/components/voice-command";
@@ -32,10 +36,14 @@ function ResultRow({
 }) {
   const Icon =
     result.kind === "lookup"
-      ? Search
+      ? result.lookup.kind === "briefing"
+        ? Sun
+        : Search
       : result.kind === "draft"
         ? FileText
-        : CalendarClock;
+        : result.kind === "minutes"
+          ? ClipboardList
+          : CalendarClock;
   return (
     <li>
       <Button
@@ -52,14 +60,23 @@ function ResultRow({
             {result.lookup.sources.length === 1 ? "source" : "sources"}
           </span>
         )}
+        {result.kind === "minutes" && (
+          <span className="result-time">
+            {result.minutes.action_items.length}{" "}
+            {result.minutes.action_items.length === 1 ? "task" : "tasks"}
+          </span>
+        )}
         {result.kind === "reminder" && (
-          <time
-            className="result-time"
-            dateTime={result.dueAt}
-            title={formatDue(result, true)}
-          >
-            {formatDue(result)}
-          </time>
+          <span className="result-time" style={{ display: "inline-flex", gap: "0.35rem", alignItems: "center" }}>
+            {result.repeat && (
+              <span className="result-badge" style={{ textTransform: "capitalize", fontSize: "0.75rem" }}>
+                {result.repeat}
+              </span>
+            )}
+            <time dateTime={result.dueAt} title={formatDue(result, true)}>
+              {formatDue(result)}
+            </time>
+          </span>
         )}
         <ChevronRight className="result-chevron" aria-hidden="true" />
       </Button>
@@ -72,6 +89,7 @@ export function App() {
   const { view, selectedSession } = live;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [contactsOpen, setContactsOpen] = useState(false);
+  const [minutesOpen, setMinutesOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const openedRequest = useRef<string | null>(null);
@@ -125,7 +143,7 @@ export function App() {
     (session) => session.id === selectedSession,
   )?.label;
 
-  const resultsByTurn = new Map<string, (StoredResult | StoredLookup)[]>();
+  const resultsByTurn = new Map<string, WorkspaceResult[]>();
   for (const result of live.results) {
     const group = resultsByTurn.get(result.commandId) ?? [];
     group.push(result);
@@ -191,7 +209,7 @@ export function App() {
                   </h2>
                   <ul className="history-list">
                     {sessions.map((session) => (
-                      <li key={session.id}>
+                      <li key={session.id} className="history-item">
                         <Button
                           variant="ghost"
                           className="history-command"
@@ -205,6 +223,28 @@ export function App() {
                           <span>{session.label}</span>
                           {session.excerpt && <small>{session.excerpt}</small>}
                         </Button>
+                        {session.id !== earlierActivity && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="history-delete-button"
+                            aria-label={`Delete ${session.label}`}
+                            title={`Delete ${session.label}`}
+                            disabled={!live.canSelect}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (
+                                window.confirm(
+                                  `Delete ${session.label} and its saved results from this browser?`,
+                                )
+                              ) {
+                                void live.deleteSession(session.id);
+                              }
+                            }}
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                          </Button>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -299,6 +339,14 @@ export function App() {
           >
             <Users /> Contacts
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="contacts-trigger"
+            onClick={() => setMinutesOpen(true)}
+          >
+            <ClipboardList /> Meeting Minutes
+          </Button>
         </footer>
       </div>
       <ResultQuickView
@@ -307,6 +355,7 @@ export function App() {
         onSelect={setSelectedId}
         onSave={live.edit}
         onPlayReply={live.playReply}
+        onCreateReminder={live.createReminder}
         onRestoreFocus={() => returnFocus.current?.focus()}
       />
       <ContactsDialog
@@ -315,6 +364,13 @@ export function App() {
         pendingClarification={view.phase === "clarification"}
         onOpenChange={setContactsOpen}
         onAdd={live.addContact}
+        onRestoreFocus={() => contactsButton.current?.focus()}
+      />
+      <MeetingMinutesDialog
+        open={minutesOpen}
+        onOpenChange={setMinutesOpen}
+        onSummarize={live.summarizeMeeting}
+        onSelectResult={(id) => setSelectedId(id)}
         onRestoreFocus={() => contactsButton.current?.focus()}
       />
     </TooltipProvider>

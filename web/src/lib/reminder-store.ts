@@ -11,11 +11,14 @@ import {
   validateContact,
   type GuestContact,
 } from "./contacts.ts";
-import type {
-  DraftResult,
-  ReminderResult,
-  WorkspaceResult,
-  LookupWorkspaceResult,
+import {
+  nextRecurringDue,
+  type DraftResult,
+  type ReminderResult,
+  type WorkspaceResult,
+  type LookupWorkspaceResult,
+  type MeetingMinutes,
+  type MinutesResult,
 } from "./results.ts";
 
 export type Session = { id: string; createdAt: string };
@@ -28,6 +31,7 @@ export type Turn = {
   replyLanguage?: SpeechLanguage;
   lookup?: LookupResult;
   lookupContext?: LookupContext;
+  minutes?: MeetingMinutes;
 };
 export const earlierActivity = "earlier-activity";
 
@@ -44,6 +48,7 @@ export type StoredReminder = ReminderResult &
   SavedMetadata & { mailRevision?: number };
 export type StoredDraft = DraftResult & SavedMetadata & { contactId: string };
 export type StoredLookup = LookupWorkspaceResult & SavedMetadata;
+export type StoredMinutes = MinutesResult & SavedMetadata;
 export type StoredResult = StoredReminder | StoredDraft;
 type Receipt = { commandId: string; reminderId?: string; draftId?: string };
 export type CommitResult = { records: StoredResult[]; created: boolean };
@@ -198,6 +203,81 @@ export async function selectWorkspaceSession(id?: string) {
   return { selected, created };
 }
 
+export async function deleteWorkspaceSession(sessionId: string): Promise<{
+  selected: string;
+  created?: Session;
+}> {
+  let nextSelected = "";
+  let createdSession: Session | undefined;
+
+  await writeWorkspace(
+    ["sessions", "turns", "reminders", "drafts", "settings"],
+    (tx) => {
+      const sessionsStore = tx.objectStore("sessions");
+      const turnsStore = tx.objectStore("turns");
+      const remindersStore = tx.objectStore("reminders");
+      const draftsStore = tx.objectStore("drafts");
+      const settingsStore = tx.objectStore("settings");
+
+      sessionsStore.delete(sessionId);
+
+      const turnsReq = turnsStore.getAll();
+      turnsReq.onsuccess = () => {
+        const allTurns = (turnsReq.result as Turn[]) || [];
+        for (const turn of allTurns) {
+          if (turn.sessionId === sessionId) {
+            turnsStore.delete(turn.id);
+          }
+        }
+      };
+
+      const remindersReq = remindersStore.getAll();
+      remindersReq.onsuccess = () => {
+        const allReminders = (remindersReq.result as StoredReminder[]) || [];
+        for (const rem of allReminders) {
+          if (rem.sessionId === sessionId) {
+            remindersStore.delete(rem.id);
+          }
+        }
+      };
+
+      const draftsReq = draftsStore.getAll();
+      draftsReq.onsuccess = () => {
+        const allDrafts = (draftsReq.result as StoredDraft[]) || [];
+        for (const draft of allDrafts) {
+          if (draft.sessionId === sessionId) {
+            draftsStore.delete(draft.id);
+          }
+        }
+      };
+
+      const settingsReq = settingsStore.get("selectedSession");
+      settingsReq.onsuccess = () => {
+        const currentSelected = settingsReq.result as string | undefined;
+        if (currentSelected === sessionId) {
+          const allSessionsReq = sessionsStore.getAll();
+          allSessionsReq.onsuccess = () => {
+            const remaining = (allSessionsReq.result as Session[]) || [];
+            if (remaining.length > 0) {
+              nextSelected = remaining[remaining.length - 1].id;
+            } else {
+              createdSession = newSession();
+              sessionsStore.add(createdSession);
+              nextSelected = createdSession.id;
+            }
+            settingsStore.put(nextSelected, "selectedSession");
+          };
+        } else {
+          nextSelected = currentSelected ?? "";
+        }
+      };
+    },
+  );
+
+  signalReminderChange();
+  return { selected: nextSelected, created: createdSession };
+}
+
 export async function storeTurn(turn: Turn) {
   await writeWorkspace(["turns"], (tx) => tx.objectStore("turns").put(turn));
 }
@@ -255,6 +335,68 @@ export function lookupRecord(turn: Turn): StoredLookup | null {
   };
 }
 
+export function minutesRecord(turn: Turn): StoredMinutes | null {
+  if (!turn.minutes) return null;
+  return {
+    id: `minutes:${turn.id}`,
+    commandId: turn.id,
+    sessionId: turn.sessionId,
+    createdAt: turn.createdAt,
+    transcript: turn.transcript,
+    kind: "minutes",
+    title: "Meeting Minutes",
+    minutes: turn.minutes,
+  };
+}
+
+export async function commitMinutes(
+  turn: Turn,
+  minutes: MeetingMinutes,
+): Promise<{ turn: Turn; created: boolean }> {
+  const db = await openStore();
+  const stored: Turn = { ...turn, minutes };
+  let created = false;
+  let saved: Turn | undefined;
+  await new Promise<void>((resolve, reject) => {
+    let tx: IDBTransaction;
+    try {
+      tx = db.transaction(["turns", "commands"], "readwrite");
+    } catch {
+      db.close();
+      reject(storageError());
+      return;
+    }
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(storageError());
+    };
+    const commands = tx.objectStore("commands");
+    commands.get(turn.id).onsuccess = (event) => {
+      const existing = (event.target as IDBRequest).result as
+        | Receipt
+        | undefined;
+      if (!existing) {
+        created = true;
+        commands.add({ commandId: turn.id });
+      }
+      const turns = tx.objectStore("turns");
+      turns.get(turn.id).onsuccess = (turnEvent) => {
+        const found = (turnEvent.target as IDBRequest).result as
+          | Turn
+          | undefined;
+        saved = found?.minutes ? found : stored;
+        turns.put(saved);
+      };
+    };
+  });
+  if (!saved) throw storageError();
+  return { turn: saved, created };
+}
+
 export function recordsForCommand(
   request: CommandRequest,
   actions: readonly CommandAction[],
@@ -292,6 +434,7 @@ export function recordsForCommand(
         title: action.title,
         dueAt: action.due_at,
         timezone: request.timezone,
+        ...(action.repeat ? { repeat: action.repeat } : {}),
       } satisfies StoredReminder;
     if (action.type !== "draft_email") throw storageError();
     const contact = request.contacts?.find(
@@ -441,6 +584,7 @@ export async function commitCommand(
               ...original,
               dueAt: correction.due_at,
               timezone: request.timezone,
+              ...(correction.repeat ? { repeat: correction.repeat } : {}),
             };
             queueOwnerMail(tx, updated);
             tx.objectStore("reminders").put(updated);
@@ -509,6 +653,31 @@ export async function commitCommand(
       reject(failure ?? storageError());
     };
   });
+}
+
+export async function addManualReminder(
+  title: string,
+  dueAt: string,
+  sessionId: string,
+): Promise<StoredReminder> {
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const reminder: StoredReminder = {
+    id,
+    kind: "reminder",
+    title,
+    dueAt,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    commandId: id,
+    createdAt: now,
+    sessionId,
+  };
+  await writeWorkspace(["reminders", "settings"], (tx) => {
+    queueOwnerMail(tx, reminder);
+    tx.objectStore("reminders").add(reminder);
+  });
+  signalReminderChange();
+  return reminder;
 }
 
 export async function updateResult(
@@ -702,12 +871,22 @@ export async function pollReminders(now: number, canRing = () => false) {
 }
 
 export async function dismissReminderAlerts(alerts: readonly StoredReminder[]) {
-  await writeWorkspace(["settings"], (tx) => {
-    for (const reminder of alerts)
+  await writeWorkspace(["reminders", "settings"], (tx) => {
+    for (const reminder of alerts) {
       tx.objectStore("settings").put(
         Date.parse(reminder.dueAt),
         "dismissed:" + reminder.id,
       );
+      if (reminder.repeat) {
+        const nextDue = nextRecurringDue(reminder.dueAt, reminder.repeat);
+        const updated: StoredReminder = {
+          ...reminder,
+          dueAt: nextDue,
+        };
+        queueOwnerMail(tx, updated);
+        tx.objectStore("reminders").put(updated);
+      }
+    }
   });
   signalReminderChange();
 }

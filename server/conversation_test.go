@@ -46,3 +46,94 @@ func TestReplyCannotAccompanyOrSmuggleSavedActions(t *testing.T) {
 		}
 	}
 }
+
+func TestPreviousTurnForwardedToGroq(t *testing.T) {
+	calls := 0
+	handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		var payload struct{ Messages []struct{ Content string } }
+		if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 {
+			t.Fatal("expected 2 messages to Groq")
+		}
+		userContent := payload.Messages[1].Content
+		if !strings.Contains(userContent, `"previous_turn"`) ||
+			!strings.Contains(userContent, `"topic":"Adolf Hitler"`) ||
+			!strings.Contains(userContent, `"answer":"Adolf Hitler was an Austrian-born German politician."`) {
+			t.Fatalf("previous_turn missing or incomplete in Groq payload: %s", userContent)
+		}
+		model, _ := json.Marshal(modelInterpretation{
+			Actions: []action{{Type: "reply", Text: "He died on 30 April 1945 in Berlin."}},
+		})
+		body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]string{"content": string(model)}}}})
+		return providerResponse(200, string(body)), nil
+	})
+
+	var request commandRequest
+	_ = json.Unmarshal([]byte(fixtureCommand), &request)
+	request.Transcript = "When did he die?"
+	request.PreviousTurn = &previousTurnContext{
+		Transcript: "Tell me about Adolf Hitler",
+		Topic:      "Adolf Hitler",
+		Answer:     "Adolf Hitler was an Austrian-born German politician.",
+		Reply:      "Adolf Hitler was an Austrian-born German politician.",
+	}
+	status, body := requestCommand(t, handler, request)
+	var response commandResponse
+	if json.Unmarshal([]byte(body), &response) != nil || status != 200 || calls != 1 {
+		t.Fatalf("unexpected response: %d %s", status, body)
+	}
+	if response.Reply != "He died on 30 April 1945 in Berlin." {
+		t.Fatalf("unexpected reply: %s", response.Reply)
+	}
+}
+
+func TestRejectsOversizedPreviousTurn(t *testing.T) {
+	var request commandRequest
+	_ = json.Unmarshal([]byte(fixtureCommand), &request)
+	request.PreviousTurn = &previousTurnContext{
+		Transcript: strings.Repeat("x", 8193),
+	}
+	_, _, err := validateRequest(request)
+	if err == nil || !strings.Contains(err.Error(), "previous_turn") {
+		t.Fatalf("expected previous_turn validation error, got %v", err)
+	}
+
+	request.PreviousTurn = &previousTurnContext{
+		Topic: strings.Repeat("a", 301),
+	}
+	_, _, err = validateRequest(request)
+	if err == nil || !strings.Contains(err.Error(), "previous_turn") {
+		t.Fatalf("expected previous_turn topic validation error, got %v", err)
+	}
+}
+
+func TestRecurringReminderValidation(t *testing.T) {
+	var request commandRequest
+	_ = json.Unmarshal([]byte(fixtureCommand), &request)
+	now, location, _ := validateRequest(request)
+
+	for _, tc := range []struct {
+		repeat string
+		valid  bool
+	}{
+		{"", true},
+		{"daily", true},
+		{"weekly", true},
+		{"weekdays", true},
+		{"monthly", false},
+		{"hourly", false},
+	} {
+		result := interpretation{
+			Actions: []action{{
+				Type:   "create_reminder",
+				Title:  "Drink water",
+				DueAt:  now.Add(time.Hour).Format(offsetTimestamp),
+				Repeat: tc.repeat,
+			}},
+		}
+		err := validateInterpretation(&result, now, location)
+		if (err == nil) != tc.valid {
+			t.Fatalf("repeat=%q valid=%v, got err=%v", tc.repeat, tc.valid, err)
+		}
+	}
+}

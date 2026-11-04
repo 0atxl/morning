@@ -86,7 +86,7 @@ func (s *lookupService) mcpPost(ctx context.Context, session, version string, id
 		return nil, "", providerRequestError(err)
 	}
 	defer response.Body.Close()
-	if err := lookupHTTPError(response.StatusCode); err != nil {
+	if err := lookupHTTPError(response.StatusCode, response.Header.Get("Retry-After")); err != nil {
 		return nil, "", err
 	}
 	if id == 0 {
@@ -177,12 +177,12 @@ func mcpResult(data []byte, id int) (json.RawMessage, error) {
 	return envelope.Result, nil
 }
 
-func lookupHTTPError(status int) error {
+func lookupHTTPError(status int, retryAfterHeader string) error {
 	switch status {
 	case 401, 403:
 		return &lookupError{"lookup_access_denied", "The lookup provider rejected Morning's server credentials or access.", 0, false}
 	case 402, 429, 432, 433:
-		return &lookupError{"lookup_quota_limited", "The lookup provider's quota or rate limit was reached. Please try later.", 60, true}
+		return &lookupError{"lookup_quota_limited", "The lookup provider's quota or rate limit was reached. Please try later.", providerRetrySeconds(retryAfterHeader, time.Now()), true}
 	}
 	if status < 200 || status >= 300 {
 		return errProviderUnavailable
@@ -276,12 +276,12 @@ func tavilyMCPError(raw []byte) error {
 	text := strings.ToLower(string(raw))
 	for _, marker := range []string{"quota", "credit", "429", "432", "rate limit", "usage limit", "usage_limit"} {
 		if strings.Contains(text, marker) {
-			return lookupHTTPError(429)
+			return lookupHTTPError(429, "")
 		}
 	}
 	for _, marker := range []string{"invalid api key", "invalid_api_key", "unauthorized", "401", "403"} {
 		if strings.Contains(text, marker) {
-			return lookupHTTPError(401)
+			return lookupHTTPError(401, "")
 		}
 	}
 	return errProviderUnavailable
@@ -293,22 +293,40 @@ func parseTavilyText(text string) ([]tavilyItem, bool) {
 		return nil, false
 	}
 	items := []tavilyItem{}
-	for _, block := range strings.Split(detailed, "\n\n") {
+	trimmed := strings.TrimSpace(detailed)
+	if trimmed == "" {
+		return items, true
+	}
+	rawBlocks := strings.Split("\n"+trimmed, "\nTitle: ")
+	for _, block := range rawBlocks[1:] {
 		lines := strings.Split(strings.TrimSpace(block), "\n")
-		if len(lines) < 2 || !strings.HasPrefix(lines[0], "Title: ") {
+		if len(lines) < 2 {
 			continue
 		}
-		item := tavilyItem{Title: strings.TrimPrefix(lines[0], "Title: ")}
+		item := tavilyItem{Title: strings.TrimSpace(lines[0])}
 		for i, line := range lines[1:] {
 			switch {
 			case strings.HasPrefix(line, "URL: ") && item.URL == "":
-				item.URL = strings.TrimPrefix(line, "URL: ")
-			case strings.HasPrefix(line, "Published Date: "):
-				item.PublishedDate = strings.TrimPrefix(line, "Published Date: ")
+				item.URL = strings.TrimSpace(strings.TrimPrefix(line, "URL: "))
+			case strings.HasPrefix(line, "Published Date: ") && item.PublishedDate == "":
+				item.PublishedDate = strings.TrimSpace(strings.TrimPrefix(line, "Published Date: "))
 			case strings.HasPrefix(line, "Content: "):
-				item.Content = strings.TrimPrefix(strings.Join(lines[i+1:], "\n"), "Content: ")
-				// Everything after Content is untrusted excerpt data, not metadata.
-				items = append(items, item)
+				contentLines := lines[i+1:]
+				if item.PublishedDate == "" && len(contentLines) > 1 {
+					last := strings.TrimSpace(contentLines[len(contentLines)-1])
+					if strings.HasPrefix(last, "Published Date: ") {
+						candidate := strings.TrimSpace(strings.TrimPrefix(last, "Published Date: "))
+						if _, ok := tavilyPublicationTime(candidate); ok {
+							item.PublishedDate = candidate
+							contentLines = contentLines[:len(contentLines)-1]
+						}
+					}
+				}
+				item.Content = strings.TrimSpace(strings.TrimPrefix(strings.Join(contentLines, "\n"), "Content: "))
+				// Everything inside Content is untrusted excerpt data, not metadata.
+				if item.URL != "" {
+					items = append(items, item)
+				}
 				goto next
 			}
 		}
@@ -321,7 +339,20 @@ func parseTavilyText(text string) ([]tavilyItem, bool) {
 }
 
 func tavilyPublicationTime(value string) (time.Time, bool) {
-	for _, layout := range []string{time.RFC3339Nano, time.RFC1123, time.RFC1123Z} {
+	value = strings.TrimSpace(value)
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC1123,
+		time.RFC1123Z,
+		"Mon, _2 Jan 2006 15:04:05 MST",
+		"Mon, _2 Jan 2006 15:04:05 -0700",
+		time.RFC822,
+		time.RFC822Z,
+		time.RFC850,
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05 -0700",
+		"2006-01-02 15:04:05 MST",
+	} {
 		if parsed, err := time.Parse(layout, value); err == nil {
 			return parsed, true
 		}

@@ -15,17 +15,25 @@ import (
 const websocketURL = "wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&language_hint=en&language_hint=hi&interim_results=true&smart_format=true"
 
 type commandRequest struct {
-	CommandID          string           `json:"command_id"`
-	Transcript         string           `json:"transcript"`
-	Now                string           `json:"now"`
-	Timezone           string           `json:"timezone"`
-	Contacts           []contact        `json:"contacts,omitempty"`
-	SelectedContactID  *string          `json:"selected_contact_id,omitempty"`
-	ReminderContext    *reminderContext `json:"reminder_context,omitempty"`
-	SelectedReminderID *string          `json:"selected_reminder_id,omitempty"`
-	DraftContext       *draftContext    `json:"draft_context,omitempty"`
-	SelectedDraftID    *string          `json:"selected_draft_id,omitempty"`
-	LookupContext      *lookupContext   `json:"lookup_context,omitempty"`
+	CommandID          string               `json:"command_id"`
+	Transcript         string               `json:"transcript"`
+	Now                string               `json:"now"`
+	Timezone           string               `json:"timezone"`
+	Contacts           []contact            `json:"contacts,omitempty"`
+	SelectedContactID  *string              `json:"selected_contact_id,omitempty"`
+	ReminderContext    *reminderContext     `json:"reminder_context,omitempty"`
+	SelectedReminderID *string              `json:"selected_reminder_id,omitempty"`
+	DraftContext       *draftContext        `json:"draft_context,omitempty"`
+	SelectedDraftID    *string              `json:"selected_draft_id,omitempty"`
+	LookupContext      *lookupContext       `json:"lookup_context,omitempty"`
+	PreviousTurn       *previousTurnContext `json:"previous_turn,omitempty"`
+}
+
+type previousTurnContext struct {
+	Transcript string `json:"transcript,omitempty"`
+	Topic      string `json:"topic,omitempty"`
+	Answer     string `json:"answer,omitempty"`
+	Reply      string `json:"reply,omitempty"`
 }
 
 type draftContext struct {
@@ -51,6 +59,7 @@ type action struct {
 	Start      string `json:"start,omitempty"`
 	End        string `json:"end,omitempty"`
 	Timezone   string `json:"timezone,omitempty"`
+	Repeat     string `json:"repeat,omitempty"`
 	// Groq quotes the spoken start and end or duration. Go removes these before responding.
 	StartPhrase string `json:"start_phrase,omitempty"`
 	EndPhrase   string `json:"end_phrase,omitempty"`
@@ -98,6 +107,7 @@ type api struct {
 	commands  *rateLimiter
 	speech    *speechService
 	lookups   *lookupService
+	tracer    *langsmithTracer
 }
 
 func newAPI(p *providers, clock func() time.Time) http.Handler {
@@ -105,6 +115,10 @@ func newAPI(p *providers, clock func() time.Time) http.Handler {
 }
 
 func newAPIWithMailbox(p *providers, clock func() time.Time, mailbox *reminderMailbox) http.Handler {
+	tracer := newLangsmithTracer(p.client)
+	if p.tracer == nil {
+		p.tracer = tracer
+	}
 	a := &api{
 		providers: p,
 		clock:     clock,
@@ -112,6 +126,7 @@ func newAPIWithMailbox(p *providers, clock func() time.Time, mailbox *reminderMa
 		commands:  newRateLimiter(60, 600),
 		speech:    newSpeechService(p.client.Transport),
 		lookups:   newLookupService(p, clock),
+		tracer:    tracer,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -161,13 +176,21 @@ func (a *api) voiceToken(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) command(w http.ResponseWriter, r *http.Request) {
+	cmdStart := time.Now()
+	var cmdErr error
+	var cmdOutput any
+	var request commandRequest
+	defer func() {
+		if a.tracer != nil && request.CommandID != "" {
+			a.tracer.TraceCommand(request.CommandID, request.Transcript, replyLanguage(request.Transcript), cmdStart, time.Now(), cmdOutput, cmdErr)
+		}
+	}()
 	ctx, cancel := context.WithTimeout(r.Context(), 22*time.Second)
 	defer cancel()
 	r = r.WithContext(ctx)
 	if !a.allow(w, r, a.commands) {
 		return
 	}
-	var request commandRequest
 	if !readJSON(w, r, &request, 64<<10) {
 		return
 	}
@@ -192,6 +215,9 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		stage := "provider_response"
 		invalid := errors.Is(err, errInvalidProviderOutput)
 		if err == nil {
+			if model.Lookup != nil {
+				normalizeModelLookup(model.Lookup)
+			}
 			result, stage, err = validateCommandModel(model, request, now, location)
 			invalid = err != nil && !errors.Is(err, errInvalidSelection)
 		}

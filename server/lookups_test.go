@@ -346,6 +346,7 @@ func TestLookupGeocodingKeepsAndEnforcesAllPlaceQualifiers(t *testing.T) {
 		{"Pune, Maharashtra, IN", 1},
 		{"Pune, Maharashtra, Brazil", 0},
 		{"Pune, California, United States", 0},
+		{"Pune, Maharashtra, USA", 0},
 	} {
 		t.Run(tc.place, func(t *testing.T) {
 			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
@@ -495,10 +496,10 @@ func TestLookupWeatherRejectsMissingStaleOrInvalidData(t *testing.T) {
 }
 
 func TestLookupMCPTextDatesCapsAndDeduplication(t *testing.T) {
-	text := "Request ID: ignored\nDetailed Results:\n\nTitle: Today's story\nID: ignored\nURL: https://publisher.example/story\nPublished Date: Tue, 03 Nov 2026 02:00:00 GMT\nContent: Today's technology news.\n\nTitle: Duplicate\nURL: https://publisher.example/story?utm_source=duplicate\nContent: Duplicate.\n\nTitle: Bad link\nURL: javascript:alert(1)\nContent: Untrusted."
+	text := "Request ID: ignored\nDetailed Results:\n\nTitle: Today's story\nID: ignored\nURL: https://publisher.example/story\nPublished Date: Tue, 03 Nov 2026 02:00:00 GMT\nContent: Today's technology news.\n\nSecond paragraph of content.\n\nTitle: Story with trailing date\nURL: https://publisher.example/story-2\nContent: First paragraph.\n\nSecond paragraph.\nPublished Date: Tue, 3 Nov 2026 02:30:00 GMT\n\nTitle: Duplicate\nURL: https://publisher.example/story?utm_source=duplicate\nContent: Duplicate.\n\nTitle: Bad link\nURL: javascript:alert(1)\nContent: Untrusted."
 	raw, _ := json.Marshal(map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}})
 	sources, err := parseTavilyResult(raw)
-	if err != nil || len(sources) != 1 || sources[0].PublishedAt != "2026-11-03T02:00:00Z" {
+	if err != nil || len(sources) != 2 || sources[0].PublishedAt != "2026-11-03T02:00:00Z" || !strings.Contains(sources[0].Excerpt, "Second paragraph") || sources[1].PublishedAt != "2026-11-03T02:30:00Z" || strings.Contains(sources[1].Excerpt, "Published Date:") {
 		t.Fatalf("wrong text metadata: %+v %v", sources, err)
 	}
 	for _, date := range []string{"today", "2026-11-03", ""} {

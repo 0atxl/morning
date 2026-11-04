@@ -68,16 +68,24 @@ func (s *lookupService) searchLookup(ctx context.Context, q lookupQuery, now tim
 	result := &lookupResult{Kind: q.Kind, Query: query, Status: "answered", Sources: []lookupSource{}}
 	seenLabels := make(map[string]bool)
 	seenSources := make(map[int]bool)
+	var selectedOriginalSources []lookupSource
+	ungroundedCount := 0
 	for _, item := range selected.Items {
 		if item.Source < 0 || item.Source >= len(sources) || !validText(item.Quote, 1000) || !validText(item.Label, 160) {
 			return lookupOutcome{}, errInvalidProviderOutput
 		}
 		source := sources[item.Source]
-		if !strings.Contains(source.Title, item.Quote) && !strings.Contains(source.Excerpt, item.Quote) {
-			return lookupOutcome{}, errInvalidProviderOutput
-		}
-		if q.Kind == "hotels" && !strings.Contains(item.Quote, item.Label) {
-			return lookupOutcome{}, errInvalidProviderOutput
+		combinedSource := source.Title + " " + source.Excerpt
+		quoteGrounded := containsLookupText(source.Title, item.Quote) ||
+			containsLookupText(source.Excerpt, item.Quote) ||
+			containsLookupText(combinedSource, item.Quote)
+		labelGrounded := q.Kind != "hotels" ||
+			containsLookupText(item.Quote, item.Label) ||
+			containsLookupText(source.Title, item.Label) ||
+			containsLookupText(source.Excerpt, item.Label)
+		if !quoteGrounded || !labelGrounded {
+			ungroundedCount++
+			continue
 		}
 		labelKey := strings.Map(func(r rune) rune {
 			if unicode.IsLetter(r) || unicode.IsNumber(r) {
@@ -92,6 +100,7 @@ func (s *lookupService) searchLookup(ctx context.Context, q lookupQuery, now tim
 			continue
 		}
 		seenLabels[labelKey], seenSources[item.Source] = true, true
+		selectedOriginalSources = append(selectedOriginalSources, source)
 		if q.Kind == "hotels" {
 			source.Title, source.Excerpt = item.Label, ""
 		} else {
@@ -101,6 +110,9 @@ func (s *lookupService) searchLookup(ctx context.Context, q lookupQuery, now tim
 		if len(result.Sources) == lookupResultCap {
 			break
 		}
+	}
+	if len(selected.Items) > 0 && len(result.Sources) == 0 && ungroundedCount > 0 {
+		return lookupOutcome{}, errInvalidProviderOutput
 	}
 	if len(result.Sources) == 0 {
 		result.Status = "empty"
@@ -130,11 +142,22 @@ func (s *lookupService) searchLookup(ctx context.Context, q lookupQuery, now tim
 			// short supported answer is unavailable, keep the source rows useful.
 			result.Answer = "I found sources, but couldn't confirm a short answer. Open a source for details."
 			if validText(selected.Answer, maxSpeechChars) {
-				for _, source := range result.Sources {
-					if strings.Contains(source.Excerpt, selected.Answer) {
+				for i, source := range result.Sources {
+					orig := selectedOriginalSources[i]
+					if containsLookupText(source.Excerpt, selected.Answer) ||
+						containsLookupText(source.Title, selected.Answer) ||
+						containsLookupText(orig.Title+" "+orig.Excerpt, selected.Answer) {
 						result.Answer = selected.Answer
 						break
 					}
+				}
+				if result.Answer != selected.Answer && groundedWebAnswer(selected.Answer, selectedOriginalSources) {
+					result.Answer = selected.Answer
+				}
+			}
+			if result.Answer == "I found sources, but couldn't confirm a short answer. Open a source for details." {
+				if fallback := firstGroundedSentence(result.Sources[0].Excerpt); fallback != "" {
+					result.Answer = fallback
 				}
 			}
 		}
@@ -287,4 +310,76 @@ func translationNumbersSupported(translation string, sources []lookupSource) boo
 		}
 	}
 	return true
+}
+
+func normalizeLookupMatch(text string) string {
+	text = strings.NewReplacer(
+		"\u2018", "'", "\u2019", "'",
+		"\u201c", `"`, "\u201d", `"`,
+		"\u2013", "-", "\u2014", "-",
+		"\u2026", " ", "...", " ",
+	).Replace(strings.ToLower(text))
+	return strings.TrimSpace(strings.Join(strings.FieldsFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}), " "))
+}
+
+func containsLookupText(haystack, needle string) bool {
+	if needle == "" {
+		return false
+	}
+	if strings.Contains(haystack, needle) {
+		return true
+	}
+	normHaystack := normalizeLookupMatch(haystack)
+	normNeedle := strings.Trim(normalizeLookupMatch(needle), ".,;:!?\"'()-")
+	return normNeedle != "" && strings.Contains(normHaystack, normNeedle)
+}
+
+func groundedWebAnswer(answer string, sources []lookupSource) bool {
+	if !translationNumbersSupported(answer, sources) {
+		return false
+	}
+	sourceWords := make(map[string]bool)
+	for _, source := range sources {
+		for _, word := range strings.FieldsFunc(strings.ToLower(source.Title+" "+source.Excerpt), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		}) {
+			if len([]rune(word)) >= 3 {
+				sourceWords[word] = true
+			}
+		}
+	}
+	total, matched := 0, 0
+	for _, word := range strings.FieldsFunc(strings.ToLower(answer), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	}) {
+		if len([]rune(word)) < 4 {
+			continue
+		}
+		total++
+		if sourceWords[word] {
+			matched++
+		}
+	}
+	return total > 0 && matched*2 >= total
+}
+
+func firstGroundedSentence(excerpt string) string {
+	excerpt = strings.TrimSpace(excerpt)
+	if excerpt == "" {
+		return ""
+	}
+	if validText(excerpt, maxSpeechChars) {
+		return excerpt
+	}
+	for _, sep := range []string{". ", "। ", "! ", "? "} {
+		if idx := strings.Index(excerpt, sep); idx > 0 {
+			candidate := strings.TrimSpace(excerpt[:idx+len(strings.TrimSpace(sep))])
+			if validText(candidate, maxSpeechChars) {
+				return candidate
+			}
+		}
+	}
+	return ""
 }

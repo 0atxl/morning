@@ -57,6 +57,14 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 			return time.Time{}, nil, errors.New("lookup_context must contain only a pending place lookup, without action context.")
 		}
 	}
+	if pt := request.PreviousTurn; pt != nil {
+		if len(pt.Transcript) > 8192 || !utf8.ValidString(pt.Transcript) ||
+			len(pt.Topic) > 300 || !utf8.ValidString(pt.Topic) ||
+			len(pt.Answer) > 4000 || !utf8.ValidString(pt.Answer) ||
+			len(pt.Reply) > 1000 || !utf8.ValidString(pt.Reply) {
+			return time.Time{}, nil, errors.New("previous_turn fields exceed permitted length or contain invalid text.")
+		}
+	}
 	now, err := time.Parse(time.RFC3339Nano, request.Now)
 	if err != nil {
 		return time.Time{}, nil, errors.New("now must be an RFC 3339 timestamp with a timezone offset or Z.")
@@ -153,6 +161,9 @@ func validateInterpretation(result *interpretation, now time.Time, location *tim
 			if action.ToContactID != "" || action.Subject != "" || action.Body != "" {
 				return errors.New("invalid reminder fields")
 			}
+			if action.Repeat != "" && action.Repeat != "daily" && action.Repeat != "weekly" && action.Repeat != "weekdays" {
+				return errors.New("invalid repeat recurrence")
+			}
 			if action.Type == "reschedule_reminder" {
 				if len(result.Actions) != 1 || action.Title != "" {
 					return errors.New("a correction can only change one reminder time")
@@ -218,7 +229,7 @@ var (
 	reminderThenDraft = regexp.MustCompile(`(?is)^\s*(?:please\s+)?remind\s+me\b.*\band\s+(?:also\s+)?(?:please\s+)?(?:draft|write|compose)\b.*\be-?mail\b`)
 	scheduleLead      = regexp.MustCompile(spokenPrefix + `(?:schedule|book)\b`)
 	reminderLead      = regexp.MustCompile(spokenPrefix + `(?:remind\s+me|(?:set|create|schedule)\s+(?:me\s+)?(?:(?:a|an|my)\s+)?(?:reminder|alert))\b`)
-	hindiCompound     = regexp.MustCompile(`(?is)(?:(?:ईमेल|इमेल|e-?mail).*?(?:और|\baur\b).*?(?:याद\s+दिला|yaad\s+dila)|(?:याद\s+दिला|yaad\s+dila).*?(?:और|\baur\b).*?(?:ईमेल|इमेल|e-?mail))`)
+	hindiCompound     = regexp.MustCompile(`(?is)(?:(?:(?:ईमेल|इमेल|e-?mail).*?(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh|draft|bhej|write|compose)\b)|(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh|draft|bhej|write|compose)\b).*?(?:ईमेल|इमेल|e-?mail)).*?(?:और|\baur\b).*?(?:याद\s+दिला|yaad\s+dila)|(?:याद\s+दिला|yaad\s+dila).*?(?:और|\baur\b).*?(?:(?:ईमेल|इमेल|e-?mail).*?(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh|draft|bhej|write|compose)\b)|(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh|draft|bhej|write|compose)\b).*?(?:ईमेल|इमेल|e-?mail)))`)
 )
 
 // Check calendar intent before reminder and contact resolution can turn a misclassified

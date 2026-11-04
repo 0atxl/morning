@@ -11,6 +11,7 @@ export type ReminderResult = ResultBase & {
   kind: "reminder";
   dueAt: string;
   timezone: string;
+  repeat?: "daily" | "weekly" | "weekdays";
 };
 
 export type DraftResult = ResultBase & {
@@ -26,9 +27,30 @@ export type LookupWorkspaceResult = ResultBase & {
   lookup: LookupResult;
 };
 
+export type MeetingActionItem = {
+  task: string;
+  owner?: string | null;
+  deadline?: string | null;
+};
+
+export type MeetingMinutes = {
+  summary: string;
+  decisions: string[];
+  action_items: MeetingActionItem[];
+  open_questions: string[];
+};
+
+export type MinutesResult = ResultBase & {
+  kind: "minutes";
+  minutes: MeetingMinutes;
+};
+
 // Browser presentation types. These are not the server's command response.
 export type WorkspaceResult =
-  ReminderResult | DraftResult | LookupWorkspaceResult;
+  | ReminderResult
+  | DraftResult
+  | LookupWorkspaceResult
+  | MinutesResult;
 
 export function gmailComposeUrl(draft: DraftResult) {
   const query = new URLSearchParams({
@@ -39,6 +61,100 @@ export function gmailComposeUrl(draft: DraftResult) {
     body: draft.body,
   });
   return `https://mail.google.com/mail/?${query}`;
+}
+
+export function minutesComposeUrl(minutes: MeetingMinutes): string {
+  const query = new URLSearchParams({
+    view: "cm",
+    fs: "1",
+    su: `Meeting Minutes: ${minutes.summary.slice(0, 60)}`,
+    body: resultText({
+      id: "minutes",
+      title: "Meeting Minutes",
+      transcript: "",
+      kind: "minutes",
+      minutes,
+    }),
+  });
+  return `https://mail.google.com/mail/?${query}`;
+}
+
+export function deadlineInstant(deadline?: string | null): string {
+  const now = new Date();
+  if (!deadline || !deadline.trim()) {
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    return tomorrow.toISOString();
+  }
+  const text = deadline.trim().toLowerCase();
+  const days = [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+  ];
+  const dayIndex = days.indexOf(text);
+  if (dayIndex !== -1) {
+    const currentDay = now.getDay();
+    let daysAhead = dayIndex - currentDay;
+    if (daysAhead <= 0) daysAhead += 7;
+    const target = new Date(now);
+    target.setDate(target.getDate() + daysAhead);
+    target.setHours(9, 0, 0, 0);
+    return target.toISOString();
+  }
+  if (text === "tomorrow" || text === "kal" || text === "कल") {
+    const target = new Date(now);
+    target.setDate(target.getDate() + 1);
+    target.setHours(9, 0, 0, 0);
+    return target.toISOString();
+  }
+  if (text === "today" || text === "aaj" || text === "आज") {
+    const target = new Date(now);
+    target.setHours(17, 0, 0, 0);
+    if (target.getTime() <= now.getTime()) {
+      target.setTime(now.getTime() + 2 * 3600 * 1000);
+    }
+    return target.toISOString();
+  }
+  const parsed = Date.parse(deadline);
+  if (!Number.isNaN(parsed) && parsed > now.getTime()) {
+    return new Date(parsed).toISOString();
+  }
+  const fallback = new Date(now);
+  fallback.setDate(fallback.getDate() + 1);
+  fallback.setHours(9, 0, 0, 0);
+  return fallback.toISOString();
+}
+
+export function nextRecurringDue(
+  dueAt: string,
+  repeat: "daily" | "weekly" | "weekdays",
+): string {
+  const current = new Date(dueAt);
+  const now = new Date();
+  const next = new Date(current);
+
+  do {
+    if (repeat === "daily") {
+      next.setDate(next.getDate() + 1);
+    } else if (repeat === "weekly") {
+      next.setDate(next.getDate() + 7);
+    } else if (repeat === "weekdays") {
+      next.setDate(next.getDate() + 1);
+      if (next.getDay() === 6) {
+        next.setDate(next.getDate() + 2);
+      } else if (next.getDay() === 0) {
+        next.setDate(next.getDate() + 1);
+      }
+    }
+  } while (next.getTime() <= now.getTime());
+
+  return next.toISOString();
 }
 
 function calendarInstant(value: string | Date) {
@@ -140,8 +256,60 @@ export function formatDue(reminder: ReminderResult, full = false) {
 }
 
 export function resultText(result: WorkspaceResult) {
+  if (result.kind === "minutes") {
+    const m = result.minutes;
+    const lines = [
+      result.title.toUpperCase(),
+      "=".repeat(result.title.length),
+      "",
+      "SUMMARY",
+      m.summary,
+      "",
+    ];
+    if (m.decisions && m.decisions.length > 0) {
+      lines.push("DECISIONS", ...m.decisions.map((d) => `• ${d}`), "");
+    }
+    if (m.action_items && m.action_items.length > 0) {
+      lines.push(
+        "ACTION ITEMS",
+        ...m.action_items.map((item) => {
+          let line = `• ${item.task}`;
+          if (item.owner) line += ` (Owner: ${item.owner})`;
+          if (item.deadline) line += ` [Deadline: ${item.deadline}]`;
+          return line;
+        }),
+        "",
+      );
+    }
+    if (m.open_questions && m.open_questions.length > 0) {
+      lines.push(
+        "OPEN QUESTIONS",
+        ...m.open_questions.map((q) => `• ${q}`),
+        "",
+      );
+    }
+    if (result.transcript) {
+      lines.push("TRANSCRIPT", result.transcript);
+    }
+    return lines.join("\n");
+  }
   if (result.kind === "lookup") {
     const lookup = result.lookup;
+    if (lookup.kind === "wiki") {
+      return [
+        result.title.toUpperCase(),
+        "=".repeat(result.title.length),
+        `Summary from Wikipedia (Looked up: ${lookup.looked_up_at})`,
+        "",
+        lookup.answer,
+        "",
+        ...lookup.sources.map(
+          (source) => `Source: ${source.title}\nURL: ${source.url}`,
+        ),
+        "",
+        `Transcript:\n${result.transcript}`,
+      ].join("\n");
+    }
     return [
       lookup.answer,
       `Looked up: ${lookup.looked_up_at}`,

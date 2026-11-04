@@ -228,6 +228,46 @@ test("mismatched command IDs, malformed compound actions and unsupported actions
     assert.throws(() => parseCommandResponse(response, request));
 });
 
+test("a validated calendar event response maps to a reminder in the dashboard", () => {
+  const calendarEvent = {
+    type: "create_calendar_event",
+    title: "Project review",
+    start: "2026-11-06T15:00:00+05:30",
+    end: "2026-11-06T15:30:00+05:30",
+    timezone: "Asia/Kolkata",
+  };
+  assert.deepEqual(
+    parseCommandResponse(
+      {
+        command_id: request.command_id,
+        actions: [calendarEvent],
+        clarification: null,
+      },
+      request,
+    ),
+    {
+      kind: "actions",
+      actions: [
+        {
+          type: "create_reminder",
+          title: "Project review",
+          due_at: "2026-11-06T15:00:00+05:30",
+        },
+      ],
+    },
+  );
+  assert.throws(() =>
+    parseCommandResponse(
+      {
+        command_id: request.command_id,
+        actions: [{ ...calendarEvent, end: "2026-11-06T14:00:00+05:30" }],
+        clarification: null,
+      },
+      request,
+    ),
+  );
+});
+
 test("a bad date, past time or blank title cannot be saved", () => {
   for (const action of [
     { ...reminder, due_at: "not-a-date" },

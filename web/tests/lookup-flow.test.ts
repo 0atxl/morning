@@ -8,18 +8,27 @@ import {
   type CommandRequest,
 } from "../src/lib/command-api.ts";
 import {
+  continuesLookupContext,
   parseLookupContext,
   lookupProgress,
   type LookupResult,
 } from "../src/lib/lookup-result.ts";
 import {
   commitLookup,
+  deleteWorkspaceSession,
   loadWorkspace,
   lookupRecord,
   selectWorkspaceSession,
   storeTurn,
   type Turn,
 } from "../src/lib/reminder-store.ts";
+import {
+  deadlineInstant,
+  minutesComposeUrl,
+  nextRecurringDue,
+  resultText,
+  type WorkspaceResult,
+} from "../src/lib/results.ts";
 import { SpokenReply } from "../src/lib/spoken-reply.ts";
 
 // Offline definitions only. Each case uses a fresh, in-memory guest workspace.
@@ -200,6 +209,32 @@ test("all requested demo lookups show Searching, including a spoken place reply"
     lookupProgress("Remind me in ten minutes to check the oven"),
     false,
   );
+  const weatherPending = {
+    query: { kind: "weather" as const, terms: "", place: "", today: false },
+  };
+  assert.equal(continuesLookupContext("Pune, India", weatherPending), true);
+  assert.equal(
+    continuesLookupContext("What's the weather in Pune?", weatherPending),
+    true,
+  );
+  assert.equal(
+    continuesLookupContext(
+      "Remind me to drink water in ten minutes",
+      weatherPending,
+    ),
+    false,
+  );
+  assert.equal(
+    continuesLookupContext(
+      "Draft Priya an email asking for the slides",
+      weatherPending,
+    ),
+    false,
+  );
+  assert.equal(
+    continuesLookupContext("What time is it in Tokyo?", weatherPending),
+    false,
+  );
 });
 
 test("a lookup quota error scopes its cooldown to lookup retry", async (t) => {
@@ -334,4 +369,232 @@ test("a saved lookup Play reply uses speech only and reuses its clip", async (t)
   await reply.start();
   reply.play();
   assert.deepEqual(requests, ["/api/speech"]);
+});
+
+test("wiki lookups parse correctly and format a clean downloadable text summary", () => {
+  const wikiSnapshot: LookupResult = {
+    kind: "wiki",
+    query: "Adolf Hitler",
+    status: "answered",
+    answer:
+      "Adolf Hitler (Dictator of Germany from 1933 to 1945)\n\nAdolf Hitler was an Austrian-born German politician who was dictator of Germany in the Nazi era from 1933 until his suicide in 1945.",
+    speech:
+      "Adolf Hitler was an Austrian-born German politician who was dictator of Germany from 1933 until his suicide in 1945.",
+    sources: [
+      {
+        title: "Adolf Hitler - Wikipedia",
+        url: "https://en.wikipedia.org/wiki/Adolf_Hitler",
+        publisher: "Wikipedia",
+        excerpt: "Adolf Hitler was an Austrian-born German politician...",
+      },
+    ],
+    looked_up_at: "2026-11-04T12:00:00Z",
+  };
+  const response = parseCommandResponse(
+    {
+      command_id: "wiki-turn",
+      actions: [],
+      clarification: null,
+      lookup: wikiSnapshot,
+    },
+    {
+      command_id: "wiki-turn",
+      transcript: "Tell me about Adolf Hitler and give me a text file",
+      now: "2026-11-04T12:00:00Z",
+      timezone: "Asia/Kolkata",
+    },
+  );
+  assert.equal(response.kind, "lookup");
+  if (response.kind !== "lookup") return;
+  assert.equal(response.result.kind, "wiki");
+  assert.equal(response.result.query, "Adolf Hitler");
+
+  const formatted = resultText({
+    id: "wiki-result",
+    title: "Adolf Hitler",
+    transcript: "Tell me about Adolf Hitler",
+    kind: "lookup",
+    lookup: wikiSnapshot,
+  });
+  assert.ok(formatted.includes("ADOLF HITLER"));
+  assert.ok(formatted.includes("Summary from Wikipedia"));
+  assert.ok(formatted.includes("https://en.wikipedia.org/wiki/Adolf_Hitler"));
+});
+
+test("meeting minutes result formats clean structured minutes with decisions and action items", () => {
+  const minutesResult: WorkspaceResult = {
+    id: "minutes-1",
+    title: "Meeting Minutes",
+    transcript: "We will ship on Friday. Priya will send slides. Atul will test.",
+    kind: "minutes",
+    minutes: {
+      summary: "The team agreed on Friday launch and assigned preparation tasks.",
+      decisions: ["Launch on Friday"],
+      action_items: [
+        { task: "Send slides", owner: "Priya", deadline: "Thursday" },
+        { task: "Test build", owner: "Atul", deadline: null },
+      ],
+      open_questions: ["Who coordinates user support?"],
+    },
+  };
+  const text = resultText(minutesResult);
+  assert.ok(text.includes("SUMMARY"));
+  assert.ok(text.includes("DECISIONS"));
+  assert.ok(text.includes("• Launch on Friday"));
+  assert.ok(text.includes("ACTION ITEMS"));
+  assert.ok(text.includes("• Send slides (Owner: Priya) [Deadline: Thursday]"));
+  assert.ok(text.includes("• Test build (Owner: Atul)"));
+  assert.ok(text.includes("OPEN QUESTIONS"));
+  assert.ok(text.includes("• Who coordinates user support?"));
+});
+
+test("command request accepts and preserves previous turn context", () => {
+  const followUpRequest: CommandRequest = {
+    command_id: "followup-1",
+    transcript: "When did he die?",
+    now: "2026-11-04T12:05:00Z",
+    timezone: "Asia/Kolkata",
+    previous_turn: {
+      transcript: "Tell me about Adolf Hitler",
+      topic: "Adolf Hitler",
+      answer: "Adolf Hitler was an Austrian-born German politician.",
+      reply: "Adolf Hitler was an Austrian-born German politician.",
+    },
+  };
+  assert.equal(followUpRequest.previous_turn?.topic, "Adolf Hitler");
+  assert.equal(followUpRequest.previous_turn?.transcript, "Tell me about Adolf Hitler");
+});
+
+test("deadlineInstant computes future ISO timestamp for relative and named days", () => {
+  const tomorrow = deadlineInstant("tomorrow");
+  assert.ok(tomorrow.includes("T09:00:00.000Z"));
+  assert.ok(Date.parse(tomorrow) > Date.now());
+
+  const thursday = deadlineInstant("Thursday");
+  assert.ok(thursday.includes("T09:00:00.000Z"));
+  assert.ok(Date.parse(thursday) > Date.now());
+
+  const fallback = deadlineInstant(null);
+  assert.ok(fallback.includes("T09:00:00.000Z"));
+});
+
+test("minutesComposeUrl generates valid Gmail compose URL with prefilled minutes text", () => {
+  const url = minutesComposeUrl({
+    summary: "Product sync discussion",
+    decisions: ["Ship on Friday"],
+    action_items: [{ task: "Deploy build", owner: "Atul", deadline: "Thursday" }],
+    open_questions: [],
+  });
+  assert.ok(url.startsWith("https://mail.google.com/mail/?"));
+  assert.ok(url.includes("view=cm"));
+  assert.ok(url.includes("Meeting+Minutes"));
+  assert.ok(url.includes("Deploy+build"));
+});
+
+test("parseCommandResponse parses briefing lookup correctly", () => {
+  const briefingSnapshot: LookupResult = {
+    kind: "briefing",
+    query: "Pune",
+    status: "answered",
+    answer: "Good morning! In Pune it's 24.5 °C and clear. Top headlines: ...",
+    speech: "Good morning! In Pune it's 24.5 degrees Celsius and clear.",
+    sources: [
+      {
+        title: "Weather by Open-Meteo",
+        url: "https://api.open-meteo.com/v1/forecast",
+        publisher: "Open-Meteo",
+      },
+    ],
+    looked_up_at: "2026-11-04T07:00:00Z",
+  };
+  const response = parseCommandResponse(
+    {
+      command_id: "briefing-1",
+      actions: [],
+      clarification: null,
+      lookup: briefingSnapshot,
+    },
+    {
+      command_id: "briefing-1",
+      transcript: "Give me my morning briefing",
+      now: "2026-11-04T07:00:00Z",
+      timezone: "Asia/Kolkata",
+    },
+  );
+  assert.equal(response.kind, "lookup");
+  if (response.kind !== "lookup") return;
+  assert.equal(response.result.kind, "briefing");
+  assert.ok(response.result.answer.includes("Good morning!"));
+});
+
+test("nextRecurringDue correctly rolls forward for daily, weekly, and weekdays", () => {
+  const baseTime = "2026-11-04T09:00:00.000Z";
+
+  const daily = nextRecurringDue(baseTime, "daily");
+  assert.ok(Date.parse(daily) > Date.now());
+
+  const weekly = nextRecurringDue(baseTime, "weekly");
+  assert.ok(Date.parse(weekly) > Date.now());
+
+  const weekdays = nextRecurringDue(baseTime, "weekdays");
+  const nextDate = new Date(weekdays);
+  assert.ok(nextDate.getDay() >= 1 && nextDate.getDay() <= 5);
+});
+
+test("parseCommandResponse preserves repeat recurrence on create_reminder", () => {
+  const response = parseCommandResponse(
+    {
+      command_id: "rec-rem-1",
+      actions: [
+        {
+          type: "create_reminder",
+          title: "Take vitamins",
+          due_at: "2026-11-05T09:00:00+05:30",
+          repeat: "daily",
+        },
+      ],
+      clarification: null,
+      lookup: null,
+    },
+    {
+      command_id: "rec-rem-1",
+      transcript: "Remind me every day at 9 AM to take vitamins",
+      now: "2026-11-04T08:00:00Z",
+      timezone: "Asia/Kolkata",
+    },
+  );
+  assert.equal(response.kind, "actions");
+  if (response.kind !== "actions") return;
+  assert.equal(response.actions[0].type, "create_reminder");
+  if (response.actions[0].type === "create_reminder") {
+    assert.equal(response.actions[0].repeat, "daily");
+  }
+});
+
+test("deleteWorkspaceSession removes session, associated turns, and switches selection", async () => {
+  const initial = await loadWorkspace();
+  const session1 = initial.selectedSession;
+
+  const { selected: session2 } = await selectWorkspaceSession();
+  assert.notEqual(session1, session2);
+
+  const turn: Turn = {
+    id: "turn-to-delete",
+    sessionId: session2,
+    transcript: "Test turn",
+    createdAt: new Date().toISOString(),
+  };
+  await storeTurn(turn);
+
+  const before = await loadWorkspace();
+  assert.equal(before.sessions.length, 2);
+  assert.ok(before.turns.some((t) => t.id === "turn-to-delete"));
+
+  const result = await deleteWorkspaceSession(session2);
+  assert.equal(result.selected, session1);
+
+  const after = await loadWorkspace();
+  assert.equal(after.sessions.length, 1);
+  assert.equal(after.selectedSession, session1);
+  assert.ok(!after.turns.some((t) => t.id === "turn-to-delete"));
 });

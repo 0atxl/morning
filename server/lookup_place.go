@@ -64,6 +64,9 @@ func (s *lookupService) spokenLookupPlace(ctx context.Context, pending lookupCon
 	if decodeObject([]byte(choice.Message.Content), &result) != nil || json.Unmarshal([]byte(choice.Message.Content), &fields) != nil || len(fields) != 1 || len(fields["place"]) == 0 {
 		return lookupQuery{}, errInvalidProviderOutput
 	}
+	if replyLanguage(transcript) == "hi" {
+		pending.ReplyLanguage = "hi"
+	}
 	if result.Place == nil {
 		// Keep the original lookup and ask again without sending an unrelated
 		// utterance or failed question text to the geocoder/search provider.

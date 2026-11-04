@@ -28,8 +28,17 @@ The default address is `127.0.0.1:8080`. The shell loads `server/.env` before Go
 | --- | --- | --- |
 | `DEEPGRAM_API_KEY` | Yes | Permanent server-side Deepgram key with Member or higher permission to grant temporary tokens. |
 | `GROQ_API_KEY` | Yes | Server-side Groq key for `openai/gpt-oss-20b`. |
+| `TAVILY_API_KEY` | No | Server-side Tavily key for read-only hotel, news and web lookups via Tavily MCP. |
 | `ELEVENLABS_API_KEY` | No | Server-side ElevenLabs key with text-to-speech access. |
 | `ELEVENLABS_VOICE_ID` | No | ID of an ElevenLabs voice available to that key. |
+| `MORNING_GMAIL_ADDRESS` | No | Gmail address for owner-paired automatic reminder emails. |
+| `MORNING_GMAIL_APP_PASSWORD` | No | 16-character Gmail app password for SMTP delivery. |
+| `TELEGRAM_BOT_TOKEN` | No | Telegram Bot Token for instant mobile push notifications when reminders are due. |
+| `TELEGRAM_CHAT_ID` | No | Telegram Chat ID to receive reminder alert messages. |
+| `LANGSMITH_API_KEY` | No | LangSmith API key for asynchronous command tracing, latency monitoring, and LLM evaluation. |
+| `LANGSMITH_PROJECT` | No | LangSmith project name (defaults to `morning`). |
+| `MORNING_REMINDER_OWNER_KEY` | No | Secret owner key (at least 32 characters) required to schedule reminder emails. |
+| `MORNING_REMINDER_STATE_DIR` | No | Directory for persisted reminder email schedules (defaults to `/var/lib/morning/reminder-email`). |
 | `LISTEN_ADDR` | No | Go listen address. Set `0.0.0.0:8080` when the hosting environment requires it. |
 
 On the Azure VM, use `sudoedit /etc/morning/server.env` to set both ElevenLabs variables and `sudo systemctl restart morning-api.service` to load them. Use the Go service environment for these values. The frontend build needs neither. Startup and command interpretation work with either ElevenLabs setting blank.
@@ -405,7 +414,7 @@ The drafting prompt asks for a developed email, usually 60 to 120 words unless t
 
 Tests require explicit user confirmation for each run and run only on GitHub Actions. The manually dispatched [Fixture tests workflow](../.github/workflows/backend-tests.yml) runs Go provider fixtures and isolated Node browser-logic fixtures for an approved revision. It has no automatic triggers and needs no provider credentials. It covers contracts, storage, retries, speech stubs and calendar serialization without opening a browser or contacting a live provider. Do not run the suite locally or dispatch it without approval for that exact revision and scope.
 
-The custom test transport returns local `testdata/` fixtures and cannot reach live providers. Cases cover a draft alone, the Friday compound command, contact ambiguity despite a confident model choice, valid and invalid selections, all-or-nothing output validation, the original reminder response, missing context, provider failures, timezones and token grants. The new draft cases have been authored but have not run. No provider probes, browser QA or CI were run for this change.
+The custom test transport returns local `testdata/` fixtures and cannot reach live providers. Cases cover a draft alone, the Friday compound command, contact ambiguity despite a confident model choice, valid and invalid selections, all-or-nothing output validation, the original reminder response, missing context, provider failures, timezones and token grants. The fixture workflow has run in CI through commit `ad81331` (`41742148454`).
 
 Smoke and browser E2E verification require a separately approved, manually dispatched GitHub Actions run with the cases, commit and live-provider usage stated. Backend fixture tests do not verify microphone capture, IndexedDB transactions, duplicate saves after an edit, or browser speech.
 

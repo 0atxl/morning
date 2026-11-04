@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	lookupTimeout   = 12 * time.Second
+	lookupTimeout   = 16 * time.Second
 	lookupResultCap = 3
 )
 
@@ -100,19 +100,53 @@ func newLookupService(p *providers, clock func() time.Time) *lookupService {
 	}
 }
 
+func normalizeModelLookup(q *lookupQuery) {
+	q.Terms = strings.TrimSpace(q.Terms)
+	q.Place = strings.TrimSpace(q.Place)
+	switch q.Kind {
+	case "hotels":
+		q.Terms = ""
+		q.Today = false
+	case "news":
+		if q.Terms == "" && q.Place != "" {
+			q.Terms = "latest news"
+		}
+	case "wiki":
+		if q.Terms == "" && q.Place != "" {
+			q.Terms = q.Place
+			q.Place = ""
+		}
+		q.Today = false
+	case "briefing":
+		q.Terms = ""
+		q.Today = true
+	case "web":
+		if q.Terms == "" && q.Place != "" {
+			q.Terms = q.Place
+			q.Place = ""
+		}
+		if q.Today {
+			q.Today = false
+			if !strings.Contains(strings.ToLower(q.Terms), "today") && validText(q.Terms+" today", 300) {
+				q.Terms += " today"
+			}
+		}
+	}
+}
+
 func validateLookup(q lookupQuery) error {
 	switch q.Kind {
-	case "hotels", "weather", "news", "web", "time":
+	case "hotels", "weather", "news", "web", "time", "wiki", "briefing":
 	default:
 		return errors.New("unsupported lookup kind")
 	}
 	if q.Terms != "" && !validText(q.Terms, 300) || q.Place != "" && !validText(q.Place, 120) {
 		return errors.New("invalid lookup terms or place")
 	}
-	if (q.Kind == "web" || q.Kind == "news") && q.Terms == "" {
+	if (q.Kind == "web" || q.Kind == "news" || q.Kind == "wiki") && q.Terms == "" {
 		return errors.New("search terms are required")
 	}
-	if q.Today && q.Kind != "news" || (q.Kind == "weather" || q.Kind == "time" || q.Kind == "hotels") && q.Terms != "" {
+	if q.Today && q.Kind != "news" && q.Kind != "briefing" || (q.Kind == "weather" || q.Kind == "time" || q.Kind == "hotels" || q.Kind == "briefing") && q.Terms != "" || (q.Kind == "wiki" && q.Place != "") {
 		return errors.New("irrelevant lookup arguments")
 	}
 	return nil
@@ -166,8 +200,12 @@ func (s *lookupService) lookup(ctx context.Context, q lookupQuery, visitor, time
 	ctx, cancel := context.WithTimeout(ctx, lookupTimeout)
 	defer cancel()
 	var outcome lookupOutcome
-	if q.Kind == "weather" || q.Kind == "time" {
+	if q.Kind == "briefing" {
+		outcome, err = s.lookupBriefing(ctx, q, visitor, timezone)
+	} else if q.Kind == "weather" || q.Kind == "time" {
 		outcome, err = s.placeLookup(ctx, q, now)
+	} else if q.Kind == "wiki" {
+		outcome, err = s.wikiLookup(ctx, q, now)
 	} else {
 		outcome, err = s.searchLookup(ctx, q, now, location)
 	}
@@ -306,6 +344,15 @@ func sourcePublisher(raw string) string {
 func lookupDisplayQuery(q lookupQuery) string {
 	if q.Kind == "hotels" {
 		return "Hotels near " + q.Place
+	}
+	if q.Kind == "wiki" {
+		return "Wikipedia: " + q.Terms
+	}
+	if q.Kind == "briefing" {
+		if q.Place != "" {
+			return "Morning briefing for " + q.Place
+		}
+		return "Daily Morning Briefing"
 	}
 	return strings.TrimSpace(fmt.Sprintf("%s %s", q.Terms, q.Place))
 }

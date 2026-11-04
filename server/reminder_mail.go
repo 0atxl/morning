@@ -40,6 +40,7 @@ type mailEntry struct {
 type reminderMailbox struct {
 	mu                                  sync.Mutex
 	address, password, token, directory string
+	telegram                            *telegramNotifier
 }
 
 var mailJobID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,100}$`)
@@ -52,19 +53,30 @@ func newReminderMailbox() *reminderMailbox {
 	if dir == "" {
 		dir = "/var/lib/morning/reminder-email"
 	}
-	if address == "" || password == "" || len(token) < 32 {
+	telegram := newTelegramNotifier(nil)
+	hasGmail := address != "" && password != ""
+	if !hasGmail && telegram == nil {
 		return nil
 	}
-	addr, err := mail.ParseAddress(address)
-	if err != nil || addr.Address != address {
-		log.Print("Reminder mail disabled: invalid sender address")
+	if len(token) < 32 {
 		return nil
+	}
+	if hasGmail {
+		addr, err := mail.ParseAddress(address)
+		if err != nil || addr.Address != address {
+			log.Print("Reminder mail disabled: invalid sender address")
+			if telegram == nil {
+				return nil
+			}
+			address = ""
+			password = ""
+		}
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
-		log.Print("Reminder mail disabled: queue directory unavailable")
+		log.Print("Reminder alerts disabled: queue directory unavailable")
 		return nil
 	}
-	return &reminderMailbox{address: address, password: password, token: token, directory: dir}
+	return &reminderMailbox{address: address, password: password, token: token, directory: dir, telegram: telegram}
 }
 
 func (m *reminderMailbox) schedule(w http.ResponseWriter, r *http.Request) {
@@ -163,29 +175,69 @@ func (m *reminderMailbox) run(ctx context.Context) {
 
 func (m *reminderMailbox) deliver(path string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	entry, err := readMailEntry(path)
 	now := time.Now()
 	if err != nil || entry.Sent || entry.DueAt.After(now) || entry.RetryAt.After(now) {
+		m.mu.Unlock()
 		return
 	}
 	// Persist a retry delay before contacting SMTP so a crash does not cause
 	// a tight resend loop. A stable Message-ID follows retries.
 	entry.RetryAt = now.Add(5 * time.Minute)
 	if saveMailEntry(path, entry) != nil {
+		m.mu.Unlock()
 		return
 	}
+	m.mu.Unlock()
 	if err := m.send(entry); err != nil {
 		log.Print("Gmail reminder delivery deferred")
 		return
 	}
-	entry.Sent = true
-	if err := saveMailEntry(path, entry); err != nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	latest, err := readMailEntry(path)
+	if err != nil {
 		log.Print("Could not record Gmail reminder delivery")
+		return
+	}
+	if latest.Revision == entry.Revision || latest.DueAt.Equal(entry.DueAt) {
+		latest.Sent = true
+		latest.RetryAt = time.Time{}
+		if err := saveMailEntry(path, latest); err != nil {
+			log.Print("Could not record Gmail reminder delivery")
+		}
 	}
 }
 
 func (m *reminderMailbox) send(entry mailEntry) error {
+	var mailErr, tgErr error
+	if m.address != "" && m.password != "" {
+		mailErr = m.sendGmail(entry)
+		if mailErr != nil {
+			log.Printf("Gmail delivery failed: %v", mailErr)
+		}
+	}
+	if m.telegram != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		tgErr = m.telegram.SendReminder(ctx, entry.Title, entry.DueAt)
+		if tgErr != nil {
+			log.Printf("Telegram delivery failed: %v", tgErr)
+		}
+	}
+	if mailErr != nil && tgErr != nil {
+		return mailErr
+	}
+	if m.address != "" && mailErr != nil && m.telegram == nil {
+		return mailErr
+	}
+	if m.telegram != nil && tgErr != nil && m.address == "" {
+		return tgErr
+	}
+	return nil
+}
+
+func (m *reminderMailbox) sendGmail(entry mailEntry) error {
 	const host = "smtp.gmail.com"
 	conn, err := net.DialTimeout("tcp", host+":587", 5*time.Second)
 	if err != nil {

@@ -713,6 +713,30 @@ a:focus-visible {
   background: var(--secondary);
   font-weight: 500;
 }
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+}
+.history-item .history-command {
+  flex: 1;
+  min-width: 0;
+}
+.history-delete-button {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  color: var(--muted-foreground);
+  opacity: 0.6;
+  border-radius: var(--radius);
+  transition: opacity 0.15s, color 0.15s, background-color 0.15s;
+}
+.history-delete-button:hover:not(:disabled) {
+  opacity: 1;
+  color: #ef4444;
+  background-color: rgba(239, 68, 68, 0.1);
+}
 .conversation-turn + .conversation-turn {
   margin-top: 20px;
 }

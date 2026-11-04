@@ -66,7 +66,7 @@ func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlac
 		if !validText(candidate.Name, 100) || !validText(candidate.Country, 100) || candidate.Latitude == nil || candidate.Longitude == nil || math.Abs(*candidate.Latitude) > 90 || math.Abs(*candidate.Longitude) > 180 {
 			continue
 		}
-		if !strings.EqualFold(candidate.Name, name) && !hindiText(name) {
+		if !matchesCityName(candidate.Name, name) && !hindiText(name) {
 			continue
 		}
 		if _, err := time.LoadLocation(candidate.Timezone); err != nil || candidate.Timezone == "" || candidate.Timezone == "Local" {
@@ -78,7 +78,7 @@ func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlac
 		label := candidate.label()
 		qualified := true
 		for _, qualifier := range parts[1:] {
-			if qualifier == "" || !(strings.EqualFold(qualifier, candidate.CountryCode) || strings.EqualFold(qualifier, candidate.Country) || strings.EqualFold(qualifier, candidate.Admin1)) {
+			if !matchesPlaceQualifier(qualifier, candidate) {
 				qualified = false
 			}
 		}
@@ -217,6 +217,73 @@ var hindiWeatherConditions = map[int]string{
 	85: "हल्की बर्फ़ की बौछारें", 86: "तेज़ बर्फ़ की बौछारें", 95: "गरज के साथ बारिश", 96: "गरज के साथ हल्के ओले", 99: "गरज के साथ भारी ओले",
 }
 
+func matchesCityName(candidateName, queryName string) bool {
+	if strings.EqualFold(candidateName, queryName) {
+		return true
+	}
+	trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(queryName, " City"), " city"))
+	if trimmed != "" && strings.EqualFold(candidateName, trimmed) {
+		return true
+	}
+	normalizeSaint := func(s string) string {
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(strings.ToLower(s), "st. ") {
+			return "Saint " + s[4:]
+		}
+		if strings.HasPrefix(strings.ToLower(s), "st ") {
+			return "Saint " + s[3:]
+		}
+		return s
+	}
+	if strings.EqualFold(normalizeSaint(candidateName), normalizeSaint(queryName)) {
+		return true
+	}
+	if (strings.EqualFold(queryName, "Bengaluru") && strings.EqualFold(candidateName, "Bangalore")) ||
+		(strings.EqualFold(queryName, "Bangalore") && strings.EqualFold(candidateName, "Bengaluru")) {
+		return true
+	}
+	return false
+}
+
+var usStateCodes = map[string]string{
+	"AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
+	"CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "FL": "Florida", "GA": "Georgia",
+	"HI": "Hawaii", "ID": "Idaho", "IL": "Illinois", "IN": "Indiana", "IA": "Iowa",
+	"KS": "Kansas", "KY": "Kentucky", "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+	"MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota", "MS": "Mississippi", "MO": "Missouri",
+	"MT": "Montana", "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire", "NJ": "New Jersey",
+	"NM": "New Mexico", "NY": "New York", "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio",
+	"OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania", "RI": "Rhode Island", "SC": "South Carolina",
+	"SD": "South Dakota", "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont",
+	"VA": "Virginia", "WA": "Washington", "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
+	"DC": "District of Columbia",
+}
+
+func matchesPlaceQualifier(qualifier string, candidate lookupPlace) bool {
+	qualifier = strings.TrimSpace(qualifier)
+	if qualifier == "" {
+		return false
+	}
+	if strings.EqualFold(qualifier, candidate.CountryCode) ||
+		strings.EqualFold(qualifier, candidate.Country) ||
+		strings.EqualFold(qualifier, candidate.Admin1) {
+		return true
+	}
+	code := strings.ToUpper(strings.ReplaceAll(qualifier, ".", ""))
+	if stateName, ok := usStateCodes[code]; ok && strings.EqualFold(candidate.CountryCode, "US") && strings.EqualFold(candidate.Admin1, stateName) {
+		return true
+	}
+	switch code {
+	case "UK", "GREAT BRITAIN", "BRITAIN":
+		return strings.EqualFold(candidate.CountryCode, "GB") || strings.EqualFold(candidate.Country, "United Kingdom")
+	case "USA", "US", "UNITED STATES OF AMERICA":
+		return strings.EqualFold(candidate.CountryCode, "US") || strings.EqualFold(candidate.Country, "United States")
+	case "UAE":
+		return strings.EqualFold(candidate.CountryCode, "AE") || strings.EqualFold(candidate.Country, "United Arab Emirates")
+	}
+	return false
+}
+
 func (s *lookupService) lookupGET(ctx context.Context, endpoint string, args url.Values, dst any) error {
 	r, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"?"+args.Encode(), nil)
 	r.Header.Set("Accept", "application/json")
@@ -225,7 +292,7 @@ func (s *lookupService) lookupGET(ctx context.Context, endpoint string, args url
 		return providerRequestError(err)
 	}
 	defer response.Body.Close()
-	if err := lookupHTTPError(response.StatusCode); err != nil {
+	if err := lookupHTTPError(response.StatusCode, response.Header.Get("Retry-After")); err != nil {
 		return err
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxLookupBody+1))

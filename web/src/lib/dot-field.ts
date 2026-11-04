@@ -1,6 +1,5 @@
 // Floating dot shapes adapted from the user-provided Morning reference.
-export type DotStructureState =
-  "ORB" | "STT" | "NOTEPAD" | "PEN" | "MAIL" | "DIAL";
+export type DotStructureState = "ORB" | "STT" | "PEN" | "MAIL" | "DIAL";
 
 export const W = 46;
 export const H = 19;
@@ -74,55 +73,6 @@ export function computeDotField(
             val = Math.max(val, (0.85 - ring1) * (1 - dist / 10));
           if (ring2 < 0.45)
             val = Math.max(val, (0.85 - ring2) * (1 - dist / 10));
-        }
-      } else if (state === "NOTEPAD") {
-        const left = -6.0,
-          right = 6.0,
-          top = -7.5,
-          bot = 7.5,
-          foldSize = 3.2;
-        const inRect = ax >= left && ax <= right && ay >= top && ay <= bot;
-        const inCutout = ax - (right - foldSize) - (ay - top) > 0;
-        if (inRect && !inCutout) {
-          const edgeDist = Math.min(
-            Math.abs(ax - left),
-            Math.abs(ax - right),
-            Math.abs(ay - top),
-            Math.abs(ay - bot),
-            distToSeg(ax, ay, right - foldSize, top, right, top + foldSize),
-            distToSeg(
-              ax,
-              ay,
-              right - foldSize,
-              top,
-              right - foldSize,
-              top + foldSize,
-            ),
-            distToSeg(
-              ax,
-              ay,
-              right - foldSize,
-              top + foldSize,
-              right,
-              top + foldSize,
-            ),
-          );
-          if (edgeDist < 0.48) val = 0.95;
-
-          const lineYs = [-3.5, -1.2, 1.1, 3.4, 5.5];
-          const lineLengths = [7.0, 9.2, 8.4, 9.2, 5.5];
-          let budget = (t * 4.5) % 45;
-          for (let i = 0; i < lineYs.length; i++) {
-            const curLen = Math.max(0, Math.min(lineLengths[i], budget));
-            budget -= lineLengths[i];
-            if (
-              Math.abs(ay - lineYs[i]) < 0.42 &&
-              ax >= left + 1.4 &&
-              ax <= left + 1.4 + curLen
-            ) {
-              val = Math.abs(ax - (left + 1.4 + curLen)) < 0.6 ? 1.0 : 0.72;
-            }
-          }
         }
       } else if (state === "PEN") {
         const nibX = -4.5 + Math.sin(t * 1.1) * 3.8;

@@ -34,7 +34,7 @@ Saved records, contacts and manual edits stay in this browser profile. Quick Vie
 
 Reminder Quick View offers **Download .ics** and **Add to Google Calendar**. Both create a one-minute entry at the saved due time. Review and save or import it in your calendar. Calendar copies do not sync with later edits in Morning.
 
-The backend also implements calendar-event responses and meeting minutes. Their browser recording and event-scheduling flows are pending. Packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
+Spoken calendar-event scheduling requests save as reminders in the dashboard with `.ics` and Google Calendar export. The backend also implements meeting minutes, while browser meeting-minutes recording, packaged local installation and phone sync are future work. The [project presentation](https://morning.atuls.me/presentation.html) explains today's demo and these plans separately. Local development is available now using the setup above and your own hosted-provider keys.
 
 ## Read-only lookup setup
 

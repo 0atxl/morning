@@ -15,13 +15,13 @@ export function clarificationTarget(
   question: string,
 ): "reminder" | "draft" | "contact" | null {
   if (
-    /which\b.*\b(?:reminder|task)|कौन\s*सा.*रिमाइंडर|kaun\s*sa.*reminder/i.test(
+    /(?:which|what)\b.*\b(?:reminder|task)|कौन\s*सा.*रिमाइंडर|किस\s*रिमाइंडर|kaun\s*sa.*reminder/i.test(
       question,
     )
   )
     return "reminder";
   if (
-    /which\b.*\b(?:draft|email)|कौन\s*सा.*ड्राफ्ट|kaun\s*sa.*draft/i.test(
+    /(?:which|what)\b.*\b(?:draft|email|message)|कौन\s*सा.*(?:ड्राफ्ट|ईमेल)|किस\s*(?:ड्राफ्ट|ईमेल)|kaun\s*sa.*(?:draft|email)/i.test(
       question,
     )
   )
