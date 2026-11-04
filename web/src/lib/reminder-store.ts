@@ -35,6 +35,42 @@ export type Turn = {
 };
 export const earlierActivity = "earlier-activity";
 
+// Only completed read-only turns supply memory. Saved actions use their own
+// explicit contexts and receipts; an old command must never become a new action.
+export function previousTurnContext(
+  turns: readonly Turn[],
+  sessionId: string,
+): CommandRequest["previous_turn"] {
+  if (!sessionId || sessionId === earlierActivity) return;
+  const previous = turns
+    .filter(
+      (turn) =>
+        turn.sessionId === sessionId &&
+        !turn.lookupContext &&
+        (turn.lookup?.status === "answered" || turn.minutes || turn.reply),
+    )
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  if (!previous) return;
+
+  const values = {
+    transcript: previous.transcript,
+    topic: previous.lookup?.query ?? (previous.minutes ? "Meeting notes" : ""),
+    answer: previous.lookup?.answer ?? previous.minutes?.summary ?? "",
+    reply: previous.reply ?? "",
+  };
+  // Go validates UTF-8 bytes, including for Hindi. Do not split a code point.
+  const limits = { transcript: 8192, topic: 300, answer: 4000, reply: 1000 };
+  const context: NonNullable<CommandRequest["previous_turn"]> = {};
+  for (const key of ["transcript", "topic", "answer", "reply"] as const) {
+    const bytes = new TextEncoder().encode(values[key]);
+    let end = Math.min(bytes.length, limits[key]);
+    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+    const text = new TextDecoder().decode(bytes.subarray(0, end)).trim();
+    if (text) context[key] = text;
+  }
+  return Object.keys(context).length ? context : undefined;
+}
+
 function newSession(): Session {
   return { id: crypto.randomUUID(), createdAt: new Date().toISOString() };
 }
@@ -666,6 +702,7 @@ export async function addManualReminder(
     id,
     kind: "reminder",
     title,
+    transcript: "",
     dueAt,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     commandId: id,

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConversationalReplyUsesGroqAndReturnsNoSavedActions(t *testing.T) {
@@ -135,5 +136,39 @@ func TestRecurringReminderValidation(t *testing.T) {
 		if (err == nil) != tc.valid {
 			t.Fatalf("repeat=%q valid=%v, got err=%v", tc.repeat, tc.valid, err)
 		}
+	}
+}
+
+func TestReminderProviderAcceptsSchemaRepeatAndLegacyOmission(t *testing.T) {
+	for _, field := range []string{"", `,"repeat":""`, `,"repeat":"daily"`, `,"repeat":"weekly"`, `,"repeat":"weekdays"`} {
+		t.Run(field, func(t *testing.T) {
+			handler := fixtureAPI(t, func(*http.Request) (*http.Response, error) {
+				content := `{"actions":[{"type":"create_reminder","title":"Check the oven","due_at":"2026-11-03T09:10:00+05:30"` + field + `}],"clarification":null,"recipient_name":null}`
+				body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]string{"content": content}}}})
+				return providerResponse(200, string(body)), nil
+			})
+			w := requestAPI(handler, "/api/commands", fixtureCommand)
+			if w.Code != http.StatusOK {
+				t.Fatalf("schema repeat rejected: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestPendingBriefingContractRejectsActionAndMemoryContexts(t *testing.T) {
+	var request commandRequest
+	_ = json.Unmarshal([]byte(fixtureCommand), &request)
+	request.LookupContext = &lookupContext{Query: lookupQuery{Kind: "briefing", Today: true}}
+	if _, _, err := validateRequest(request); err != nil {
+		t.Fatal(err)
+	}
+	request.PreviousTurn = &previousTurnContext{Topic: "Old discussion"}
+	if _, _, err := validateRequest(request); err == nil {
+		t.Fatal("pending place lookup accepted unrelated conversation context")
+	}
+	request.PreviousTurn = nil
+	request.ReminderContext = &reminderContext{ID: "saved", DueAt: time.Now()}
+	if _, _, err := validateRequest(request); err == nil {
+		t.Fatal("pending place lookup accepted action context")
 	}
 }

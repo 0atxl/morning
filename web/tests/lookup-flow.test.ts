@@ -18,6 +18,8 @@ import {
   deleteWorkspaceSession,
   loadWorkspace,
   lookupRecord,
+  previousTurnContext,
+  earlierActivity,
   selectWorkspaceSession,
   storeTurn,
   type Turn,
@@ -506,6 +508,8 @@ test("parseCommandResponse parses briefing lookup correctly", () => {
       },
     ],
     looked_up_at: "2026-11-04T07:00:00Z",
+    timezone: "Asia/Kolkata",
+    data_time: "2026-11-04T06:45:00Z",
   };
   const response = parseCommandResponse(
     {
@@ -597,4 +601,141 @@ test("deleteWorkspaceSession removes session, associated turns, and switches sel
   assert.equal(after.sessions.length, 1);
   assert.equal(after.selectedSession, session1);
   assert.ok(!after.turns.some((t) => t.id === "turn-to-delete"));
+});
+
+test("previous-turn memory selects the latest completed answer in the active session", () => {
+  const answered: Turn = {
+    id: "answer",
+    sessionId: "active",
+    createdAt: "2026-11-04T10:00:00Z",
+    transcript: "Find hotels near Jaipur railway station",
+    lookup: snapshot,
+  };
+  const turns: Turn[] = [
+    {
+      ...answered,
+      id: "other",
+      sessionId: "other",
+      createdAt: "2026-11-04T12:00:00Z",
+    },
+    { ...answered, id: "older", createdAt: "2026-11-04T09:00:00Z" },
+    answered,
+    {
+      id: "write",
+      sessionId: "active",
+      createdAt: "2026-11-04T11:00:00Z",
+      transcript: "Remind me to call Priya",
+    },
+    {
+      id: "pending",
+      sessionId: "active",
+      createdAt: "2026-11-04T11:30:00Z",
+      transcript: "Weather near me",
+      reply: "Which city?",
+      lookupContext: {
+        query: { kind: "weather", terms: "", place: "", today: false },
+      },
+    },
+  ];
+  assert.deepEqual(previousTurnContext(turns, "active"), {
+    transcript: answered.transcript,
+    topic: snapshot.query,
+    answer: snapshot.answer,
+  });
+  assert.equal(previousTurnContext(turns, "new-session"), undefined);
+  assert.equal(previousTurnContext(turns, earlierActivity), undefined);
+  assert.equal(previousTurnContext([turns[3]], "active"), undefined);
+  assert.equal(turns[0].id, "other");
+});
+
+test("previous-turn fields obey Go's UTF-8 byte limits without splitting Hindi or emoji", () => {
+  const context = previousTurnContext(
+    [
+      {
+        id: "unicode",
+        sessionId: "active",
+        createdAt: "2026-11-04T10:00:00Z",
+        transcript: "अ".repeat(3000),
+        lookup: {
+          ...snapshot,
+          query: "😀".repeat(100),
+          answer: "अ".repeat(2000),
+        },
+        reply: "😀".repeat(300),
+      },
+    ],
+    "active",
+  )!;
+  for (const [key, max] of Object.entries({
+    transcript: 8192,
+    topic: 300,
+    answer: 4000,
+    reply: 1000,
+  })) {
+    const value = context[key as keyof typeof context]!;
+    assert.ok(new TextEncoder().encode(value).length <= max, key);
+    assert.ok(!value.includes("\ufffd"), key);
+  }
+  assert.deepEqual(
+    previousTurnContext(
+      [
+        {
+          id: "minutes",
+          sessionId: "active",
+          createdAt: "2026-11-04T11:00:00Z",
+          transcript: "Meeting discussion",
+          minutes: {
+            summary: "Launch Friday",
+            decisions: [],
+            action_items: [],
+            open_questions: [],
+          },
+        },
+      ],
+      "active",
+    ),
+    {
+      transcript: "Meeting discussion",
+      topic: "Meeting notes",
+      answer: "Launch Friday",
+    },
+  );
+});
+
+test("briefing place clarification stays read-only and preserves today=true", () => {
+  const lookup_context = {
+    query: { kind: "briefing", terms: "", place: "", today: true },
+  };
+  const response = parseCommandResponse(
+    {
+      command_id: request.command_id,
+      actions: [],
+      clarification: "Which city?",
+      lookup_context,
+    },
+    request,
+  );
+  assert.equal(response.kind, "clarification");
+  if (response.kind !== "clarification") return;
+  assert.equal(response.lookupContext?.query.today, true);
+  assert.throws(() =>
+    parseLookupContext({ query: { ...lookup_context.query, today: false } }),
+  );
+  assert.throws(() =>
+    parseCommandResponse(
+      {
+        command_id: request.command_id,
+        actions: [
+          {
+            type: "create_reminder",
+            title: "Injected",
+            due_at: "2026-11-05T09:00:00+05:30",
+          },
+        ],
+        clarification: "Which city?",
+        lookup_context,
+      },
+      request,
+    ),
+  );
 });

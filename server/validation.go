@@ -50,10 +50,10 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 	}
 	if request.LookupContext != nil {
 		pending := request.LookupContext
-		if validateLookup(pending.Query) != nil || (pending.Query.Kind != "hotels" && pending.Query.Kind != "weather" && pending.Query.Kind != "time") ||
+		if validateLookup(pending.Query) != nil || (pending.Query.Kind != "hotels" && pending.Query.Kind != "weather" && pending.Query.Kind != "time" && pending.Query.Kind != "briefing") ||
 			(pending.ReplyLanguage != "" && pending.ReplyLanguage != "en" && pending.ReplyLanguage != "hi") ||
 			(pending.City != "" && !validText(pending.City, 100)) || len(request.Contacts) > 0 || request.SelectedContactID != nil ||
-			request.ReminderContext != nil || request.SelectedReminderID != nil || request.DraftContext != nil || request.SelectedDraftID != nil {
+			request.ReminderContext != nil || request.SelectedReminderID != nil || request.DraftContext != nil || request.SelectedDraftID != nil || request.PreviousTurn != nil {
 			return time.Time{}, nil, errors.New("lookup_context must contain only a pending place lookup, without action context.")
 		}
 	}
@@ -149,6 +149,9 @@ func validateInterpretation(result *interpretation, now time.Time, location *tim
 			return errors.New("at most one action of each type is supported")
 		}
 		seen[action.Type] = true
+		if action.Repeat != "" && action.Type != "create_reminder" && action.Type != "reschedule_reminder" {
+			return errors.New("repeat belongs only to reminder actions")
+		}
 		if action.Type != "reply" && action.Text != "" {
 			return errors.New("reply text cannot accompany a saved action")
 		}
@@ -229,7 +232,7 @@ var (
 	reminderThenDraft = regexp.MustCompile(`(?is)^\s*(?:please\s+)?remind\s+me\b.*\band\s+(?:also\s+)?(?:please\s+)?(?:draft|write|compose)\b.*\be-?mail\b`)
 	scheduleLead      = regexp.MustCompile(spokenPrefix + `(?:schedule|book)\b`)
 	reminderLead      = regexp.MustCompile(spokenPrefix + `(?:remind\s+me|(?:set|create|schedule)\s+(?:me\s+)?(?:(?:a|an|my)\s+)?(?:reminder|alert))\b`)
-	hindiCompound     = regexp.MustCompile(`(?is)(?:(?:(?:ईमेल|इमेल|e-?mail).*?(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh|draft|bhej|write|compose)\b)|(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh|draft|bhej|write|compose)\b).*?(?:ईमेल|इमेल|e-?mail)).*?(?:और|\baur\b).*?(?:याद\s+दिला|yaad\s+dila)|(?:याद\s+दिला|yaad\s+dila).*?(?:और|\baur\b).*?(?:(?:ईमेल|इमेल|e-?mail).*?(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh|draft|bhej|write|compose)\b)|(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh|draft|bhej|write|compose)\b).*?(?:ईमेल|इमेल|e-?mail)))`)
+	hindiCompound     = regexp.MustCompile(`(?is)(?:(?:(?:ईमेल|इमेल|e-?mail).*?(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh(?:o|na)?|draft|bhej(?:o|na)?|bana(?:o|na)?|write|compose)\b)|(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh(?:o|na)?|draft|bhej(?:o|na)?|bana(?:o|na)?|write|compose)\b).*?(?:ईमेल|इमेल|e-?mail)).*?(?:और|\baur\b).*?(?:याद\s+दिला|yaad\s+dila)|(?:याद\s+दिला|yaad\s+dila).*?(?:और|\baur\b).*?(?:(?:ईमेल|इमेल|e-?mail).*?(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh(?:o|na)?|draft|bhej(?:o|na)?|bana(?:o|na)?|write|compose)\b)|(?:लिख|ड्राफ्ट|भेज|बना|\b(?:likh(?:o|na)?|draft|bhej(?:o|na)?|bana(?:o|na)?|write|compose)\b).*?(?:ईमेल|इमेल|e-?mail)))`)
 )
 
 // Check calendar intent before reminder and contact resolution can turn a misclassified

@@ -29,8 +29,8 @@ export type LookupWorkspaceResult = ResultBase & {
 
 export type MeetingActionItem = {
   task: string;
-  owner?: string | null;
-  deadline?: string | null;
+  owner: string | null;
+  deadline: string | null;
 };
 
 export type MeetingMinutes = {

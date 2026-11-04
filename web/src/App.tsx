@@ -23,8 +23,12 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useReminderFlow } from "@/hooks/use-reminder-flow";
 import { useRecorderShortcut } from "@/hooks/use-recorder-shortcut";
 import { canToggleRecorder } from "@/lib/recorder-shortcut";
-import { earlierActivity, type StoredResult } from "@/lib/reminder-store";
-import type { StoredLookup } from "@/lib/reminder-store";
+import {
+  earlierActivity,
+  type StoredResult,
+  type StoredLookup,
+  type StoredMinutes,
+} from "@/lib/reminder-store";
 import { formatDue, type WorkspaceResult } from "@/lib/results";
 
 function ResultRow({
@@ -143,7 +147,10 @@ export function App() {
     (session) => session.id === selectedSession,
   )?.label;
 
-  const resultsByTurn = new Map<string, WorkspaceResult[]>();
+  const resultsByTurn = new Map<
+    string,
+    (StoredResult | StoredLookup | StoredMinutes)[]
+  >();
   for (const result of live.results) {
     const group = resultsByTurn.get(result.commandId) ?? [];
     group.push(result);

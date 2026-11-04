@@ -134,10 +134,15 @@ func TestHindiWeatherAndTimeKeepSourcesAndDataTimes(t *testing.T) {
 }
 
 func TestHindiCompoundCannotPartiallySave(t *testing.T) {
-	for _, transcript := range []string{"Priya को ईमेल लिखो और मुझे दस मिनट में याद दिलाना", "Priya ko email likho aur mujhe dus minute mein yaad dilana"} {
+	for _, transcript := range []string{"Priya को ईमेल लिखो और मुझे दस मिनट में याद दिलाना", "Priya ko email likho aur mujhe dus minute mein yaad dilana", "Mujhe dus minute mein yaad dilana aur Priya ko email likho"} {
 		result := interpretation{Actions: []action{{Type: "create_reminder"}}}
 		if validateCommandCompleteness(result, transcript) == nil {
 			t.Fatal("partial compound request accepted")
+		}
+	}
+	for _, transcript := range []string{`Priya ko email likho "aur mujhe yaad dilana"`, "मुझे ईमेल और रिपोर्ट के बारे में याद दिलाना"} {
+		if validateCommandCompleteness(interpretation{Actions: []action{{Type: "create_reminder"}}}, transcript) != nil {
+			t.Fatal("quoted content or an email topic became a second action")
 		}
 	}
 }

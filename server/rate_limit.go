@@ -19,9 +19,6 @@ func clientAddress(r *http.Request) string {
 			if client := net.ParseIP(r.Header.Get("CF-Connecting-IP")); client != nil {
 				return client.String()
 			}
-			if client := net.ParseIP(r.Header.Get("X-Real-IP")); client != nil {
-				return client.String()
-			}
 		}
 	}
 	return r.RemoteAddr

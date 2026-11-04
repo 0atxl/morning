@@ -21,6 +21,7 @@ import {
   earlierActivity,
   selectWorkspaceSession,
   deleteWorkspaceSession,
+  previousTurnContext,
   storeTurn,
   type Session,
   type Turn,
@@ -28,6 +29,8 @@ import {
   type StoredResult,
   type StoredReminder,
   type StoredDraft,
+  type StoredLookup,
+  type StoredMinutes,
 } from "@/lib/reminder-store";
 import {
   continuesLookupContext,
@@ -804,29 +807,7 @@ export function useReminderFlow() {
         transcript,
         createdAt: new Date().toISOString(),
       };
-      const previousTurn = turns
-        .filter((item) => item.sessionId === sessionId)
-        .at(-1);
-      const previousTurnContext = previousTurn
-        ? {
-            ...(previousTurn.transcript ? { transcript: previousTurn.transcript } : {}),
-            ...(previousTurn.lookup?.query?.terms || previousTurn.lookup?.title
-              ? { topic: previousTurn.lookup?.query?.terms || previousTurn.lookup?.title }
-              : previousTurn.minutes
-                ? { topic: "Meeting notes" }
-                : {}),
-            ...(previousTurn.lookup?.answer
-              ? { answer: previousTurn.lookup.answer }
-              : previousTurn.minutes?.summary
-                ? { answer: previousTurn.minutes.summary }
-                : {}),
-            ...(previousTurn.reply ? { reply: previousTurn.reply } : {}),
-          }
-        : undefined;
-      const previous_turn =
-        previousTurnContext && Object.keys(previousTurnContext).length > 0
-          ? previousTurnContext
-          : undefined;
+      const previous_turn = previousTurnContext(turns, sessionId);
       pending.current = {
         turn,
         turnSaved: false,
@@ -1148,7 +1129,7 @@ export function useReminderFlow() {
       ...sessionTurns.flatMap((turn) => {
         const record = lookupRecord(turn);
         const minutes = minutesRecord(turn);
-        const items: WorkspaceResult[] = [];
+        const items: (StoredLookup | StoredMinutes)[] = [];
         if (record) items.push(record);
         if (minutes) items.push(minutes);
         return items;

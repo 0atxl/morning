@@ -32,9 +32,9 @@ export function parseLookupContext(data: unknown): LookupContext {
     !query ||
     !onlyKeys(query, ["kind", "terms", "place", "today"]) ||
     typeof query.kind !== "string" ||
-    !["hotels", "weather", "time"].includes(query.kind) ||
+    !["hotels", "weather", "time", "briefing"].includes(query.kind) ||
     query.terms !== "" ||
-    query.today !== false ||
+    query.today !== (query.kind === "briefing") ||
     (query.place !== "" && !text(query.place, 120)) ||
     (value.city !== undefined && !text(value.city, 100))
   )
@@ -44,7 +44,7 @@ export function parseLookupContext(data: unknown): LookupContext {
       kind: query.kind as LookupQuery["kind"],
       terms: "",
       place: query.place as string,
-      today: false,
+      today: query.today as boolean,
     },
     ...(value.city === undefined ? {} : { city: value.city as string }),
     ...(value.reply_language === undefined
@@ -203,11 +203,16 @@ export function parseLookupResult(data: unknown): LookupResult {
     ]) ||
     !validSpeechLanguage(value.reply_language) ||
     typeof value.kind !== "string" ||
-    !["hotels", "weather", "news", "web", "time", "wiki"].includes(value.kind) ||
+    !["hotels", "weather", "news", "web", "time", "wiki", "briefing"].includes(
+      value.kind,
+    ) ||
     typeof value.status !== "string" ||
     !["answered", "empty"].includes(value.status) ||
     !text(value.query, 430) ||
-    !text(value.answer, 2000) ||
+    typeof value.answer !== "string" ||
+    !(["wiki", "briefing"].includes(value.kind)
+      ? text(value.answer.replace(/\n/g, " "), 2000)
+      : text(value.answer, 2000)) ||
     !text(value.speech, 240) ||
     !timestamp(value.looked_up_at) ||
     !Array.isArray(value.sources) ||
@@ -262,7 +267,9 @@ export function parseLookupResult(data: unknown): LookupResult {
     }
   }
   if (
-    (value.kind === "weather" || value.kind === "time") &&
+    (value.kind === "weather" ||
+      value.kind === "time" ||
+      value.kind === "briefing") &&
     value.status === "answered" &&
     (value.data_time === undefined || value.timezone === undefined)
   )

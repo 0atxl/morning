@@ -394,6 +394,8 @@ export function parseCommandResponse(
         title: action.title.trim(),
         due_at: action.start,
       });
+      // The dashboard retains only the start as a reminder. Its calendar export
+      // is a one-minute marker; the validated event end is not stored or synced.
     } else if (action.type === "reschedule_reminder") {
       if (
         value.actions.length !== 1 ||

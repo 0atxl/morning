@@ -18,6 +18,7 @@ func TestClientAddressTrustsOnlyLoopbackCloudflareHeader(t *testing.T) {
 		r.RemoteAddr = tc.peer
 		r.Header.Set("CF-Connecting-IP", tc.header)
 		r.Header.Set("X-Forwarded-For", "203.0.113.99")
+		r.Header.Set("X-Real-IP", "203.0.113.100")
 		if got := clientAddress(r); got != tc.want {
 			t.Errorf("peer %q, header %q: got %q, want %q", tc.peer, tc.header, got, tc.want)
 		}

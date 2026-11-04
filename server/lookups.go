@@ -149,6 +149,9 @@ func validateLookup(q lookupQuery) error {
 	if q.Today && q.Kind != "news" && q.Kind != "briefing" || (q.Kind == "weather" || q.Kind == "time" || q.Kind == "hotels" || q.Kind == "briefing") && q.Terms != "" || (q.Kind == "wiki" && q.Place != "") {
 		return errors.New("irrelevant lookup arguments")
 	}
+	if q.Kind == "briefing" && !q.Today {
+		return errors.New("a briefing requires today=true")
+	}
 	return nil
 }
 
