@@ -68,23 +68,15 @@ func (s *lookupService) searchLookup(ctx context.Context, q lookupQuery, now tim
 	result := &lookupResult{Kind: q.Kind, Query: query, Status: "answered", Sources: []lookupSource{}}
 	seenLabels := make(map[string]bool)
 	seenSources := make(map[int]bool)
-	var selectedOriginalSources []lookupSource
-	ungroundedCount := 0
 	for _, item := range selected.Items {
 		if item.Source < 0 || item.Source >= len(sources) || !validText(item.Quote, 1000) || !validText(item.Label, 160) {
 			return lookupOutcome{}, errInvalidProviderOutput
 		}
 		source := sources[item.Source]
-		combinedSource := source.Title + " " + source.Excerpt
-		quoteGrounded := containsLookupText(source.Title, item.Quote) ||
-			containsLookupText(source.Excerpt, item.Quote) ||
-			containsLookupText(combinedSource, item.Quote)
-		labelGrounded := q.Kind != "hotels" ||
-			containsLookupText(item.Quote, item.Label) ||
-			containsLookupText(source.Title, item.Label) ||
-			containsLookupText(source.Excerpt, item.Label)
+		quoteGrounded := completeLookupQuote(source.Title, item.Quote) ||
+			completeLookupQuote(source.Excerpt, item.Quote)
+		labelGrounded := q.Kind != "hotels" || containsLookupText(item.Quote, item.Label)
 		if !quoteGrounded || !labelGrounded {
-			ungroundedCount++
 			continue
 		}
 		labelKey := strings.Map(func(r rune) rune {
@@ -100,7 +92,6 @@ func (s *lookupService) searchLookup(ctx context.Context, q lookupQuery, now tim
 			continue
 		}
 		seenLabels[labelKey], seenSources[item.Source] = true, true
-		selectedOriginalSources = append(selectedOriginalSources, source)
 		if q.Kind == "hotels" {
 			source.Title, source.Excerpt = item.Label, ""
 		} else {
@@ -111,11 +102,11 @@ func (s *lookupService) searchLookup(ctx context.Context, q lookupQuery, now tim
 			break
 		}
 	}
-	if len(selected.Items) > 0 && len(result.Sources) == 0 && ungroundedCount > 0 {
-		return lookupOutcome{}, errInvalidProviderOutput
-	}
 	if len(result.Sources) == 0 {
 		result.Status = "empty"
+		// Lack of support is not a provider outage. Keep bounded public links
+		// useful without presenting any model claim as an answer.
+		result.Sources = sources
 		result.Answer = "I couldn't confirm a relevant answer from the returned sources."
 		if q.Kind == "news" {
 			result.Answer = "I found no relevant stories with a confirmed publication time in the requested window."
@@ -138,26 +129,17 @@ func (s *lookupService) searchLookup(ctx context.Context, q lookupQuery, now tim
 				result.Answer = "ताज़ा संबंधित खबर है: " + result.Sources[0].Title
 			}
 		default:
-			// Speech is an extract from a cited source, never model memory. If a
-			// short supported answer is unavailable, keep the source rows useful.
+			result.Status = "empty"
 			result.Answer = "I found sources, but couldn't confirm a short answer. Open a source for details."
 			if validText(selected.Answer, maxSpeechChars) {
-				for i, source := range result.Sources {
-					orig := selectedOriginalSources[i]
-					if containsLookupText(source.Excerpt, selected.Answer) ||
-						containsLookupText(source.Title, selected.Answer) ||
-						containsLookupText(orig.Title+" "+orig.Excerpt, selected.Answer) {
-						result.Answer = selected.Answer
+				for _, source := range result.Sources {
+					// Only a contiguous extract of selected evidence can be spoken.
+					// Word overlap and unrelated text elsewhere in a page do not
+					// establish that a claim is supported.
+					if completeLookupQuote(source.Excerpt, selected.Answer) {
+						result.Answer, result.Status = selected.Answer, "answered"
 						break
 					}
-				}
-				if result.Answer != selected.Answer && groundedWebAnswer(selected.Answer, selectedOriginalSources) {
-					result.Answer = selected.Answer
-				}
-			}
-			if result.Answer == "I found sources, but couldn't confirm a short answer. Open a source for details." {
-				if fallback := firstGroundedSentence(result.Sources[0].Excerpt); fallback != "" {
-					result.Answer = fallback
 				}
 			}
 		}
@@ -317,7 +299,6 @@ func normalizeLookupMatch(text string) string {
 		"\u2018", "'", "\u2019", "'",
 		"\u201c", `"`, "\u201d", `"`,
 		"\u2013", "-", "\u2014", "-",
-		"\u2026", " ", "...", " ",
 	).Replace(strings.ToLower(text))
 	return strings.TrimSpace(strings.Join(strings.FieldsFunc(text, func(r rune) bool {
 		return unicode.IsSpace(r) || unicode.IsControl(r)
@@ -332,37 +313,37 @@ func containsLookupText(haystack, needle string) bool {
 		return true
 	}
 	normHaystack := normalizeLookupMatch(haystack)
-	normNeedle := strings.Trim(normalizeLookupMatch(needle), ".,;:!?\"'()-")
+	normNeedle := normalizeLookupMatch(needle)
 	return normNeedle != "" && strings.Contains(normHaystack, normNeedle)
 }
 
-func groundedWebAnswer(answer string, sources []lookupSource) bool {
-	if !translationNumbersSupported(answer, sources) {
+// Accept formatting differences, not a phrase cut out of a negated or
+// qualified sentence. Incomplete extracts remain useful as source rows only.
+func completeLookupQuote(text, quote string) bool {
+	text, quote = normalizeLookupMatch(text), normalizeLookupMatch(quote)
+	if quote == "" || strings.Contains(quote, "...") || strings.ContainsRune(quote, '…') {
 		return false
 	}
-	sourceWords := make(map[string]bool)
-	for _, source := range sources {
-		for _, word := range strings.FieldsFunc(strings.ToLower(source.Title+" "+source.Excerpt), func(r rune) bool {
-			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-		}) {
-			if len([]rune(word)) >= 3 {
-				sourceWords[word] = true
-			}
-		}
+	if text == quote {
+		return true
 	}
-	total, matched := 0, 0
-	for _, word := range strings.FieldsFunc(strings.ToLower(answer), func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	}) {
-		if len([]rune(word)) < 4 {
-			continue
+	for offset := 0; offset < len(text); {
+		index := strings.Index(text[offset:], quote)
+		if index < 0 {
+			break
 		}
-		total++
-		if sourceWords[word] {
-			matched++
+		start := offset + index
+		end := start + len(quote)
+		before := strings.TrimSpace(text[:start])
+		after := text[end:]
+		startsSentence := start == 0 || text[start-1] == ' ' && (strings.HasSuffix(before, ".") || strings.HasSuffix(before, "!") || strings.HasSuffix(before, "?") || strings.HasSuffix(before, "।"))
+		endsSentence := strings.HasSuffix(quote, ".") || strings.HasSuffix(quote, "!") || strings.HasSuffix(quote, "?") || strings.HasSuffix(quote, "।")
+		if startsSentence && endsSentence && (after == "" || strings.HasPrefix(after, " ")) {
+			return true
 		}
+		offset = start + 1
 	}
-	return total > 0 && matched*2 >= total
+	return false
 }
 
 func firstGroundedSentence(excerpt string) string {

@@ -227,3 +227,66 @@ func mustLookupRequest(t *testing.T) commandRequest {
 	}
 	return request
 }
+
+func TestLookupCommandBriefingCityContinuationUsesReadOnlyEnvelope(t *testing.T) {
+	t.Setenv("TAVILY_API_KEY", "")
+	intentCalls := 0
+	handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Host {
+		case "api.groq.com":
+			var payload struct {
+				ResponseFormat struct {
+					JSONSchema struct{ Name string } `json:"json_schema"`
+				} `json:"response_format"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			if payload.ResponseFormat.JSONSchema.Name == "morning_lookup_place" {
+				return lookupPlaceResponse(`{"place":"Pune, Maharashtra, India"}`), nil
+			}
+			intentCalls++
+			return lookupIntentResponse(modelInterpretation{Actions: []action{}, Lookup: &lookupQuery{Kind: "briefing", Today: true}}), nil
+		case "geocoding-api.open-meteo.com":
+			return lookupJSONResponse(200, fixture(t, "open-meteo-pune.json")), nil
+		case "api.open-meteo.com":
+			return lookupJSONResponse(200, fixture(t, "open-meteo-current.json")), nil
+		default:
+			t.Fatalf("unexpected provider: %s", r.URL)
+			return nil, nil
+		}
+	})
+	request := mustLookupRequest(t)
+	request.Transcript = "Give me my daily briefing"
+	status, body := requestCommand(t, handler, request)
+	var question commandResponse
+	_ = json.Unmarshal([]byte(body), &question)
+	if status != 200 || question.LookupContext == nil || question.Clarification == nil || question.Lookup != nil || len(question.Actions) != 0 || !question.LookupContext.Query.Today {
+		t.Fatalf("invalid pending briefing envelope: %d %s", status, body)
+	}
+	request.CommandID, request.Transcript = "briefing-city", "Pune, Maharashtra, India"
+	request.LookupContext = question.LookupContext
+	status, body = requestCommand(t, handler, request)
+	var result commandResponse
+	_ = json.Unmarshal([]byte(body), &result)
+	if status != 200 || result.Lookup == nil || result.Lookup.Kind != "briefing" || result.Lookup.DataTime != "2026-11-03T08:45:00+05:30" || len(result.Actions) != 0 || result.Clarification != nil || result.LookupContext != nil || intentCalls != 1 {
+		t.Fatalf("invalid completed briefing envelope: %d %s", status, body)
+	}
+}
+
+func TestLookupCommandBriefingProviderFailureHasNoActionsAndKeepsRetryDelay(t *testing.T) {
+	t.Setenv("TAVILY_API_KEY", "")
+	handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "api.groq.com" {
+			return lookupIntentResponse(modelInterpretation{Actions: []action{}, Lookup: &lookupQuery{Kind: "briefing", Place: "Pune", Today: true}}), nil
+		}
+		response := lookupJSONResponse(429, `{"message":"private provider details"}`)
+		response.Header.Set("Retry-After", "7")
+		return response, nil
+	})
+	request := strings.Replace(fixtureCommand, "Remind me in ten minutes to check the oven", "Give me a morning briefing for Pune", 1)
+	response := requestAPI(handler, "/api/commands", request)
+	var body map[string]json.RawMessage
+	_ = json.Unmarshal(response.Body.Bytes(), &body)
+	if response.Code != 429 || response.Header().Get("Retry-After") != "7" || body["error"] == nil || body["actions"] != nil || body["lookup"] != nil || strings.Contains(response.Body.String(), "private provider") {
+		t.Fatalf("wrong provider failure envelope: %d %s", response.Code, response.Body.String())
+	}
+}

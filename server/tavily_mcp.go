@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -212,6 +213,7 @@ func parseTavilyResult(raw json.RawMessage) ([]lookupSource, error) {
 	if result.IsError {
 		return nil, tavilyMCPError(raw)
 	}
+	structuredDates := true
 	var payload struct {
 		Results []tavilyItem `json:"results"`
 	}
@@ -228,8 +230,10 @@ func parseTavilyResult(raw json.RawMessage) ([]lookupSource, error) {
 		}
 		text := strings.Join(blocks, "\n")
 		if json.Unmarshal([]byte(text), &payload) != nil || payload.Results == nil {
-			// Tavily's published MCP implementation also returns Detailed Results
-			// text. That format may omit publication dates; never invent them.
+			// Detailed Results text has no unambiguous boundary between an
+			// excerpt and provider metadata. Keep a source link, but never use
+			// dates embedded in that text to establish news freshness.
+			structuredDates = false
 			var ok bool
 			payload.Results, ok = parseTavilyText(text)
 			if !ok {
@@ -260,7 +264,7 @@ func parseTavilyResult(raw json.RawMessage) ([]lookupSource, error) {
 		}
 		seen[key] = true
 		source := lookupSource{Title: title, URL: link, Publisher: sourcePublisher(link), Excerpt: lookupText(item.Content, 1800)}
-		if published, ok := tavilyPublicationTime(item.PublishedDate); ok {
+		if published, ok := tavilyPublicationTime(item.PublishedDate); ok && structuredDates {
 			source.PublishedAt = published.UTC().Format(time.RFC3339)
 		}
 		sources = append(sources, source)
@@ -287,7 +291,10 @@ func tavilyMCPError(raw []byte) error {
 	return errProviderUnavailable
 }
 
+var tavilyTitleLine = regexp.MustCompile(`(?m)^[ \t]*Title:[ \t]*`)
+
 func parseTavilyText(text string) ([]tavilyItem, bool) {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
 	_, detailed, ok := strings.Cut(text, "Detailed Results:")
 	if !ok {
 		return nil, false
@@ -297,7 +304,7 @@ func parseTavilyText(text string) ([]tavilyItem, bool) {
 	if trimmed == "" {
 		return items, true
 	}
-	rawBlocks := strings.Split("\n"+trimmed, "\nTitle: ")
+	rawBlocks := tavilyTitleLine.Split(trimmed, -1)
 	for _, block := range rawBlocks[1:] {
 		lines := strings.Split(strings.TrimSpace(block), "\n")
 		if len(lines) < 2 {
@@ -305,35 +312,28 @@ func parseTavilyText(text string) ([]tavilyItem, bool) {
 		}
 		item := tavilyItem{Title: strings.TrimSpace(lines[0])}
 		for i, line := range lines[1:] {
+			line = strings.TrimSpace(line)
 			switch {
-			case strings.HasPrefix(line, "URL: ") && item.URL == "":
-				item.URL = strings.TrimSpace(strings.TrimPrefix(line, "URL: "))
-			case strings.HasPrefix(line, "Published Date: ") && item.PublishedDate == "":
-				item.PublishedDate = strings.TrimSpace(strings.TrimPrefix(line, "Published Date: "))
-			case strings.HasPrefix(line, "Content: "):
+			case strings.HasPrefix(line, "URL:") && item.URL == "":
+				item.URL = strings.TrimSpace(strings.TrimPrefix(line, "URL:"))
+			case strings.HasPrefix(line, "Published Date:") && item.PublishedDate == "":
+				item.PublishedDate = strings.TrimSpace(strings.TrimPrefix(line, "Published Date:"))
+			case strings.HasPrefix(line, "Content:"):
 				contentLines := lines[i+1:]
-				if item.PublishedDate == "" && len(contentLines) > 1 {
-					last := strings.TrimSpace(contentLines[len(contentLines)-1])
-					if strings.HasPrefix(last, "Published Date: ") {
-						candidate := strings.TrimSpace(strings.TrimPrefix(last, "Published Date: "))
-						if _, ok := tavilyPublicationTime(candidate); ok {
-							item.PublishedDate = candidate
-							contentLines = contentLines[:len(contentLines)-1]
-						}
-					}
-				}
-				item.Content = strings.TrimSpace(strings.TrimPrefix(strings.Join(contentLines, "\n"), "Content: "))
+				item.Content = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(strings.Join(contentLines, "\n")), "Content:"))
 				// Everything inside Content is untrusted excerpt data, not metadata.
 				if item.URL != "" {
 					items = append(items, item)
 				}
-				goto next
+				// Later Title blocks could be part of this untrusted excerpt.
+				// Do not promote them into new citations.
+				return items, true
 			}
 		}
 		if item.URL != "" {
 			items = append(items, item)
 		}
-	next:
+		return items, true
 	}
 	return items, true
 }

@@ -54,9 +54,10 @@ type lookupResult struct {
 }
 
 type lookupOutcome struct {
-	Result   *lookupResult  `json:"lookup,omitempty"`
-	Question string         `json:"clarification,omitempty"`
-	Pending  *lookupContext `json:"lookup_context,omitempty"`
+	ResolvedPlace string         `json:"-"` // Validated city/region/country for briefing news.
+	Result        *lookupResult  `json:"lookup,omitempty"`
+	Question      string         `json:"clarification,omitempty"`
+	Pending       *lookupContext `json:"lookup_context,omitempty"`
 }
 
 type lookupContext struct {
@@ -189,8 +190,13 @@ func (s *lookupService) lookup(ctx context.Context, q lookupQuery, visitor, time
 	if err != nil || timezone == "" || timezone == "Local" {
 		return lookupOutcome{}, errors.New("a valid IANA timezone is required")
 	}
-	if (q.Kind == "hotels" || q.Kind == "weather" || q.Kind == "time") && missingLookupPlace(q.Place) {
-		return lookupQuestion(q, "Which city or landmark?"), nil
+	if missingLookupPlace(q.Place) {
+		if q.Kind == "briefing" {
+			return lookupQuestion(q, "Which city?"), nil
+		}
+		if q.Kind == "hotels" || q.Kind == "weather" || q.Kind == "time" {
+			return lookupQuestion(q, "Which city or landmark?"), nil
+		}
 	}
 	now := s.clock()
 	limiter := s.searchLimiter
@@ -204,7 +210,7 @@ func (s *lookupService) lookup(ctx context.Context, q lookupQuery, visitor, time
 	defer cancel()
 	var outcome lookupOutcome
 	if q.Kind == "briefing" {
-		outcome, err = s.lookupBriefing(ctx, q, visitor, timezone)
+		outcome, err = s.lookupBriefing(ctx, q, now)
 	} else if q.Kind == "weather" || q.Kind == "time" {
 		outcome, err = s.placeLookup(ctx, q, now)
 	} else if q.Kind == "wiki" {

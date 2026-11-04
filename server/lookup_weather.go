@@ -134,7 +134,7 @@ func (s *lookupService) placeLookup(ctx context.Context, q lookupQuery, now time
 		// Country geocoding often supplies only a representative timezone. Never
 		// use it for countries with multiple zones, such as the US or Australia.
 		singleZone := map[string]bool{"IN": true, "JP": true, "SG": true, "NP": true, "LK": true, "BD": true}
-		if q.Kind == "weather" || place.FeatureCode != "PCLI" || !singleZone[place.CountryCode] {
+		if q.Kind != "time" || place.FeatureCode != "PCLI" || !singleZone[place.CountryCode] {
 			return lookupQuestion(q, "Which city?"), nil
 		}
 	}
@@ -194,7 +194,7 @@ func (s *lookupService) placeLookup(ctx context.Context, q lookupQuery, now time
 		result.Sources = []lookupSource{{Title: "Current weather from Open-Meteo", URL: openMeteoWeatherURL + "?" + args.Encode(), Publisher: "Open-Meteo"}, {Title: "Place data from GeoNames via Open-Meteo", URL: "https://open-meteo.com/en/docs/geocoding-api", Publisher: "Open-Meteo / GeoNames"}}
 	}
 	result.Speech = lookupSentence(spoken)
-	return lookupOutcome{Result: result}, nil
+	return lookupOutcome{Result: result, ResolvedPlace: place.label()}, nil
 }
 
 func hindiClock(instant time.Time) string {

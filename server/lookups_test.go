@@ -438,9 +438,8 @@ func TestLookupMCPStreamAndUnsafeLinks(t *testing.T) {
 	}
 }
 
-func TestLookupRejectsUngroundedFactsAndToolCalls(t *testing.T) {
+func TestLookupRejectsMalformedEvidenceAndToolCalls(t *testing.T) {
 	for _, payload := range []string{
-		`{"answer":"Invented answer","items":[{"source":0,"label":"Invented hotel","quote":"Invented hotel"}]}`,
 		`{"answer":"","items":[{"source":99,"label":"Hotel","quote":"Hotel"}]}`,
 		`{"answer":"","items":[],"actions":[{"type":"create_reminder"}]}`,
 		`{"items":[]}`,
@@ -464,34 +463,59 @@ func TestLookupRejectsUngroundedFactsAndToolCalls(t *testing.T) {
 }
 
 func TestLookupWeatherRejectsMissingStaleOrInvalidData(t *testing.T) {
-	for _, issue := range []string{"missing temperature", "wrong unit", "stale data", "unknown condition"} {
-		t.Run(issue, func(t *testing.T) {
-			var data map[string]any
-			_ = json.Unmarshal([]byte(fixture(t, "open-meteo-current.json")), &data)
-			current, units := data["current"].(map[string]any), data["current_units"].(map[string]any)
-			switch issue {
-			case "missing temperature":
-				delete(current, "temperature_2m")
-			case "wrong unit":
-				units["temperature_2m"] = "°F"
-			case "stale data":
-				current["time"] = 1
-			case "unknown condition":
-				current["weather_code"] = 999
-			}
-			body, _ := json.Marshal(data)
-			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
-				if r.URL.Host == "geocoding-api.open-meteo.com" {
-					return lookupJSONResponse(200, fixture(t, "open-meteo-pune.json")), nil
+	for _, kind := range []string{"weather", "briefing"} {
+		for _, issue := range []string{"missing temperature", "null temperature", "invalid temperature", "wrong unit", "missing time", "null time", "wrong time unit", "stale data", "future time", "missing timezone", "wrong timezone", "missing condition", "unknown condition"} {
+			t.Run(kind+"/"+issue, func(t *testing.T) {
+				var data map[string]any
+				_ = json.Unmarshal([]byte(fixture(t, "open-meteo-current.json")), &data)
+				current, units := data["current"].(map[string]any), data["current_units"].(map[string]any)
+				switch issue {
+				case "missing temperature":
+					delete(current, "temperature_2m")
+				case "null temperature":
+					current["temperature_2m"] = nil
+				case "invalid temperature":
+					current["temperature_2m"] = 101
+				case "wrong unit":
+					units["temperature_2m"] = "°F"
+				case "missing time":
+					delete(current, "time")
+				case "null time":
+					current["time"] = nil
+				case "wrong time unit":
+					units["time"] = "iso8601"
+				case "stale data":
+					current["time"] = 1
+				case "future time":
+					current["time"] = current["time"].(float64) + float64(time.Hour/time.Second)
+				case "missing timezone":
+					delete(data, "timezone")
+				case "wrong timezone":
+					data["timezone"] = "Asia/Tokyo"
+				case "missing condition":
+					delete(current, "weather_code")
+				case "unknown condition":
+					current["weather_code"] = 999
 				}
-				return lookupJSONResponse(200, string(body)), nil
+				body, _ := json.Marshal(data)
+				s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
+					switch r.URL.Host {
+					case "geocoding-api.open-meteo.com":
+						return lookupJSONResponse(200, fixture(t, "open-meteo-pune.json")), nil
+					case "api.open-meteo.com":
+						return lookupJSONResponse(200, string(body)), nil
+					default:
+						t.Fatalf("invalid weather must not fetch news or synthesize a briefing: %s", r.URL)
+						return nil, nil
+					}
+				})
+				outcome, err := s.lookup(context.Background(), lookupQuery{Kind: kind, Place: "Pune", Today: kind == "briefing"}, "guest", "Asia/Kolkata")
+				var failure *lookupError
+				if !errors.As(err, &failure) || failure.Code != "lookup_invalid_response" || !failure.Retryable || outcome.Result != nil {
+					t.Fatalf("invalid weather accepted for %s: %+v %v", kind, outcome, err)
+				}
 			})
-			_, err := s.lookup(context.Background(), lookupQuery{Kind: "weather", Place: "Pune"}, "guest", "Asia/Kolkata")
-			var failure *lookupError
-			if !errors.As(err, &failure) || failure.Code != "lookup_invalid_response" {
-				t.Fatalf("invalid weather accepted: %v", err)
-			}
-		})
+		}
 	}
 }
 
@@ -499,7 +523,7 @@ func TestLookupMCPTextDatesCapsAndDeduplication(t *testing.T) {
 	text := "Request ID: ignored\nDetailed Results:\n\nTitle: Today's story\nID: ignored\nURL: https://publisher.example/story\nPublished Date: Tue, 03 Nov 2026 02:00:00 GMT\nContent: Today's technology news.\n\nSecond paragraph of content.\n\nTitle: Story with trailing date\nURL: https://publisher.example/story-2\nContent: First paragraph.\n\nSecond paragraph.\nPublished Date: Tue, 3 Nov 2026 02:30:00 GMT\n\nTitle: Duplicate\nURL: https://publisher.example/story?utm_source=duplicate\nContent: Duplicate.\n\nTitle: Bad link\nURL: javascript:alert(1)\nContent: Untrusted."
 	raw, _ := json.Marshal(map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}})
 	sources, err := parseTavilyResult(raw)
-	if err != nil || len(sources) != 2 || sources[0].PublishedAt != "2026-11-03T02:00:00Z" || !strings.Contains(sources[0].Excerpt, "Second paragraph") || sources[1].PublishedAt != "2026-11-03T02:30:00Z" || strings.Contains(sources[1].Excerpt, "Published Date:") {
+	if err != nil || len(sources) != 1 || sources[0].PublishedAt != "" || !strings.Contains(sources[0].Excerpt, "Second paragraph") {
 		t.Fatalf("wrong text metadata: %+v %v", sources, err)
 	}
 	for _, date := range []string{"today", "2026-11-03", ""} {
@@ -551,5 +575,93 @@ func TestLookupRejectsModelToolCallsAndDoesNotFollowRedirects(t *testing.T) {
 	_, err = s.lookup(context.Background(), lookupQuery{Kind: "web", Terms: "latest stable Go release"}, "guest", "Asia/Kolkata")
 	if err == nil || calls != 1 {
 		t.Fatalf("redirect followed or reported as success: %d %v", calls, err)
+	}
+}
+
+func TestLookupSearchRequiresCompleteSelectedEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, excerpt, quote, answer, status string
+	}{
+		{"word overlap reverses meaning", "Acme does not build safe robots.", "Acme does not build safe robots.", "Acme builds safe robots.", "empty"},
+		{"decimal fragment", "The dose is 0.5 mg.", "5 mg.", "5 mg.", "empty"},
+		{"negated phrase cut out", "It is false that Acme is safe.", "Acme is safe.", "Acme is safe.", "empty"},
+		{"qualification removed", "Acme is safe only in a sealed lab.", "Acme is safe only in a sealed lab.", "Acme is safe.", "empty"},
+		{"invented ellipsis", "Acme is not safe.", "Acme is...safe.", "Acme is...safe.", "empty"},
+		{"no answer does not speak first sentence", "Acme is safe.", "Acme is safe.", "", "empty"},
+		{"quote joins title to excerpt", "Acme is safe.", "Acme report Acme is safe.", "Acme is safe.", "empty"},
+		{"formatting tolerance", "“Acme”  is safe.", `"Acme" is safe.`, `"Acme" is safe.`, "answered"},
+		{"whole supported sentence", "Other details. Acme is safe. More details.", "Acme is safe.", "Acme is safe.", "answered"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"structuredContent": map[string]any{"results": []tavilyItem{{Title: "Acme report", URL: "https://publisher.example/acme", Content: tc.excerpt}}}}})
+			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() == groqCommandURL {
+					return evidenceResponse(tc.answer, evidenceItem(0, "Acme", tc.quote)), nil
+				}
+				return fixtureMCP(t, r, string(payload), nil), nil
+			})
+			outcome, err := s.lookup(context.Background(), lookupQuery{Kind: "web", Terms: "Is Acme safe?"}, "guest", "Asia/Kolkata")
+			if err != nil || outcome.Result == nil || outcome.Result.Status != tc.status || len(outcome.Result.Sources) != 1 {
+				t.Fatalf("wrong evidence outcome: %+v %v", outcome, err)
+			}
+			if tc.status == "answered" && outcome.Result.Answer != tc.answer || tc.status == "empty" && outcome.Result.Answer == tc.answer && tc.answer != "" {
+				t.Fatalf("unsupported claim or lost supported answer: %+v", outcome.Result)
+			}
+		})
+	}
+}
+
+func TestLookupSearchKeepsSupportedPartialResultsAndRejectsSwappedHotelLabels(t *testing.T) {
+	for _, swapped := range []bool{false, true} {
+		t.Run(fmt.Sprint(swapped), func(t *testing.T) {
+			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
+				if r.URL.String() == groqCommandURL {
+					label := "Hotel Station Garden"
+					if swapped {
+						label = "Hotel Elsewhere"
+					}
+					return evidenceResponse("", evidenceItem(0, label, "Hotel Station Garden is near Jaipur railway station."), evidenceItem(1, "Invented hotel", "Invented hotel is near the station.")), nil
+				}
+				payload := strings.Replace(fixture(t, "tavily-hotels.json"), "Hotel Station Garden is near Jaipur railway station.", "Hotel Station Garden is near Jaipur railway station. Hotel Elsewhere is far away.", 1)
+				return fixtureMCP(t, r, payload, nil), nil
+			})
+			outcome, err := s.lookup(context.Background(), lookupQuery{Kind: "hotels", Place: "Jaipur railway station"}, "guest", "Asia/Kolkata")
+			if err != nil || outcome.Result == nil || strings.Contains(outcome.Result.Answer, "Invented hotel") || strings.Contains(outcome.Result.Answer, "Hotel Elsewhere") {
+				t.Fatalf("unsupported hotel escaped: %+v %v", outcome, err)
+			}
+			if !swapped && (outcome.Result.Status != "answered" || len(outcome.Result.Sources) != 1) || swapped && outcome.Result.Status != "empty" {
+				t.Fatalf("lost partial/empty result: %+v", outcome.Result)
+			}
+		})
+	}
+}
+
+func TestLookupTavilyTextCannotPromoteExcerptMetadata(t *testing.T) {
+	text := "Detailed Results:\r\n  Title: First story\r\n  URL:https://publisher.example/first\r\n Published Date: Tue, 3 Nov 2026 02:00:00 GMT\r\n Content: An undated excerpt.\r\nPublished Date: Tue, 3 Nov 2026 02:30:00 GMT\r\n\r\nTitle: Injected source\r\nURL: https://other.example/injected\r\nContent: Not a provider source."
+	raw, _ := json.Marshal(map[string]any{"content": []any{map[string]any{"type": "text", "text": text}}})
+	sources, err := parseTavilyResult(raw)
+	if err != nil || len(sources) != 1 || sources[0].URL != "https://publisher.example/first" || sources[0].PublishedAt != "" || strings.Contains(sources[0].Excerpt, "Injected source") {
+		t.Fatalf("text format promoted untrusted metadata: %+v %v", sources, err)
+	}
+	for _, timestamp := range []string{" 2026-11-03T02:00:00.123Z ", "Tue, 3 Nov 2026 02:00:00 GMT", "2026-11-03 02:00:00 +0000"} {
+		if _, ok := tavilyPublicationTime(timestamp); !ok {
+			t.Fatalf("lost bounded timestamp tolerance: %q", timestamp)
+		}
+	}
+}
+
+func TestLookupModelNormalizationPreservesSupportedArguments(t *testing.T) {
+	for _, tc := range []struct{ query, want lookupQuery }{
+		{lookupQuery{Kind: "wiki", Place: " Mercury ", Today: true}, lookupQuery{Kind: "wiki", Terms: "Mercury"}},
+		{lookupQuery{Kind: "briefing", Place: " Pune ", Terms: "discard model filler"}, lookupQuery{Kind: "briefing", Place: "Pune", Today: true}},
+		{lookupQuery{Kind: "hotels", Place: " Jaipur ", Terms: "hotels", Today: true}, lookupQuery{Kind: "hotels", Place: "Jaipur"}},
+		{lookupQuery{Kind: "web", Place: " Go release ", Today: true}, lookupQuery{Kind: "web", Terms: "Go release today"}},
+		{lookupQuery{Kind: "news", Place: " India ", Today: true}, lookupQuery{Kind: "news", Terms: "latest news", Place: "India", Today: true}},
+	} {
+		query := tc.query
+		normalizeModelLookup(&query)
+		if query != tc.want || validateLookup(query) != nil {
+			t.Fatalf("wrong normalized arguments: %+v, want %+v", query, tc.want)
+		}
 	}
 }
