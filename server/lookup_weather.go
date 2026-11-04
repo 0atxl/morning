@@ -86,12 +86,23 @@ func (s *lookupService) geocode(ctx context.Context, place string) ([]lookupPlac
 			seen[label] = true
 		}
 	}
-	// A unique major city such as Tokyo is not ambiguous with a small namesake.
-	// Comparable candidates remain a spoken follow-up instead of a guess.
+	// Preserve the provider's relevance order. A dominant major city may have
+	// ordinary namesakes whose population is omitted; that omission alone does
+	// not make them equally relevant to a ranked capital/administrative city.
+	// Competing major cities or incomplete administrative records still ask.
 	if len(matches) > 1 && matches[0].Population >= 100000 {
+		primary := matches[0]
+		administrativeCity := primary.FeatureCode == "PPLC" || primary.FeatureCode == "PPLCD" || primary.FeatureCode == "PPLG" || strings.HasPrefix(primary.FeatureCode, "PPLA")
 		dominant := true
 		for _, candidate := range matches[1:] {
-			if matches[0].Population < 20*candidate.Population || candidate.Population == 0 {
+			if candidate.Population == 0 {
+				ordinaryLocality := candidate.FeatureCode == "PPL" || candidate.FeatureCode == "PPLL" || candidate.FeatureCode == "PPLX"
+				if !administrativeCity || !ordinaryLocality {
+					dominant = false
+				}
+				continue
+			}
+			if float64(primary.Population) < 20*float64(candidate.Population) {
 				dominant = false
 			}
 		}
