@@ -339,7 +339,10 @@ func writeProviderError(w http.ResponseWriter, id, stage string, err error) {
 		status = http.StatusTooManyRequests
 		code = stage + "_provider_rate_limited"
 		message = "Morning's provider reached its request limit. Please wait and retry."
-		w.Header().Set("Retry-After", "60")
+		if stage == "command" || stage == "minutes" {
+			message = "Groq reached a request or token limit. Your transcript is still available to retry."
+		}
+		w.Header().Set("Retry-After", strconv.Itoa(providerRetryAfter(err)))
 	} else if errors.Is(err, errInvalidProviderOutput) {
 		code = stage + "_provider_invalid_response"
 		message = "Morning received an invalid response. Please try again."

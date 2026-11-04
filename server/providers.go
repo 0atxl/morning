@@ -440,7 +440,7 @@ func (p *providers) post(ctx context.Context, endpoint, authorization string, bo
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusTooManyRequests {
-		return errProviderRateLimited
+		return &providerRateLimitError{retryAfter: providerRetrySeconds(response.Header.Get("Retry-After"), time.Now())}
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		// Provider bodies may contain credentials or transcript fragments. Never

@@ -207,7 +207,7 @@ func publicLookupError(err error) error {
 		return &lookupError{"lookup_timeout", "The lookup took too long. Your words are still available to retry.", 0, true}
 	}
 	if errors.Is(err, errProviderRateLimited) {
-		return &lookupError{"lookup_quota_limited", "The lookup provider's request limit was reached. Please try later.", 60, true}
+		return &lookupError{"lookup_quota_limited", "Groq reached a request or token limit. Your transcript is still available to retry.", providerRetryAfter(err), true}
 	}
 	if errors.Is(err, errInvalidProviderOutput) {
 		return &lookupError{"lookup_invalid_response", "The provider returned information Morning couldn't verify. Please retry.", 0, true}

@@ -80,6 +80,8 @@ Token issuance allows 30 requests per client IP and 300 total requests per serve
 
 For a loopback TCP peer, the limiter uses a valid `CF-Connecting-IP` supplied by Cloudflare Tunnel through nginx. The production origin must remain loopback-only. Direct non-loopback requests use their peer IP, and `X-Forwarded-For` is always ignored. This gives public visitors separate allowances while preserving the global cap. Visitors sharing one public IP still share that IP's allowance. A different ingress must sanitize its client identity before using this setup.
 
+Groq quotas are separate and shared across the provider organization. `command_provider_rate_limited` identifies a Groq refusal, while `rate_limited` identifies Morning's own public limit. A provider 429 never triggers generation repair or an automatic provider retry. Go forwards a valid provider `Retry-After` as whole seconds, rounding fractional values up and accepting HTTP dates. Missing/invalid timing uses a 60-second fallback, not a guarantee that the account quota resets then. Provider response bodies and raw headers stay out of errors and logs. The browser retains the transcript and uses the returned wait before retry. Check the account's [Groq limits](https://console.groq.com/docs/rate-limits) to distinguish request/token minute and daily limits.
+
 ## Interpret a command
 
 `POST /api/commands`, with `Content-Type: application/json`:
