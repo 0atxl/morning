@@ -57,9 +57,15 @@ export function parseLookupContext(data: unknown): LookupContext {
 export function lookupProgress(transcript: string, context?: LookupContext) {
   return (
     continuesLookupContext(transcript, context) ||
-    /\b(?:weather|hotels?|headlines?|news|search|look\s+up|wiki|wikipedia|briefing|morning\s+briefing|who\s+(?:was|is)|tell\s+me\s+about|summar(?:y|ize)|mausam|khabar|samachar|dhoondho)\b|ब्रीफिंग|मौसम|होटल|खबर|समाचार|कितने बजे|जानकारी|के\s+बारे\s+में|\b(?:latest|stable)\b.*\b(?:release|version)\b|\bwhat(?:'s|\s+is)?\s+(?:the\s+)?time\b/i.test(
+    /\b(?:weather|hotels?|headlines?|news|search|look\s+up|wiki|wikipedia|briefing|morning\s+briefing|who\s+(?:was|is)|tell\s+me\s+about|summar(?:y|ize)|mausam|khabar|samachar|dhoondho)\b|ब्रीफिंग|मौसम|होटल|खबर|समाचार|कितने बजे|विकिपीडिया|जानकारी|के\s+बारे\s+में|\b(?:latest|stable)\b.*\b(?:release|version)\b|\bwhat(?:'s|\s+is)?\s+(?:the\s+)?time\b/i.test(
       transcript,
     )
+  );
+}
+
+export function requestsLookupTextFile(transcript: string): boolean {
+  return /\b(?:text\s+file|download(?:\s+(?:it|a|the))?\s+file)\b|\.txt\b|टेक्स्ट\s*(?:फ़ाइल|फाइल)/iu.test(
+    transcript,
   );
 }
 
@@ -72,7 +78,7 @@ export function continuesLookupContext(
     /^\s*(?:(?:please|actually|can you|could you|no|maybe)[,.\s]+)*(?:remind\s+me\b|(?:set|create|add|schedule|book)\b|(?:draft|write|compose)\b|(?:make|move|change|reschedule|update|edit|shorten|expand|revise|rewrite)\s+(?:it|that|the|my)\b)/i.test(
       transcript,
     ) ||
-    /^\s*(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you|cancel|never\s*mind|stop|what\s+can\s+you\s+do|help\b|नमस्ते|हैलो|धन्यवाद|रद्द\s+करो|क्या\s+कर\s+सकते)/i.test(
+    /^\s*(?:(?:hi|hello|hey|good\s+(?:morning|afternoon|evening)|thanks|thank\s+you|cancel|never\s*mind|stop|what\s+can\s+you\s+do|help)\b|नमस्ते|हैलो|धन्यवाद|रद्द\s+करो|क्या\s+कर\s+सकते)/i.test(
       transcript,
     ) ||
     /याद\s+दिला|yaad\s+dila|रिमाइंडर|(?:ईमेल|ड्राफ्ट)\s*(?:लिख|बना|बदल)|(?:उसे|उसको|इसे|इसको)\s+.+\s+कर\s*(?:दो|दें)/i.test(
@@ -88,15 +94,23 @@ export function continuesLookupContext(
       transcript,
     );
   const wantsHotels = /\bhotels?\b|होटल/i.test(transcript);
-  const wantsNews =
-    /\b(?:headlines?|news|khabar|samachar)\b|खबर|समाचार/i.test(transcript);
+  const wantsNews = /\b(?:headlines?|news|khabar|samachar)\b|खबर|समाचार/i.test(
+    transcript,
+  );
   const wantsWeb =
     /\b(?:latest|stable)\b.*\b(?:release|version)\b|\b(?:search\s+for|look\s+up)\b/i.test(
+      transcript,
+    );
+  const wantsBriefing = /\bbriefing\b|ब्रीफिंग/i.test(transcript);
+  const wantsWiki =
+    /\b(?:wiki|wikipedia|who\s+(?:was|is)|tell\s+me\s+about|summar(?:y|ize))\b|विकिपीडिया|जानकारी|के\s+बारे\s+में/i.test(
       transcript,
     );
   if (
     wantsNews ||
     wantsWeb ||
+    wantsWiki ||
+    (wantsBriefing && context.query.kind !== "briefing") ||
     (wantsWeather && context.query.kind !== "weather") ||
     (wantsTime && context.query.kind !== "time") ||
     (wantsHotels && context.query.kind !== "hotels")
@@ -217,9 +231,7 @@ export function parseLookupResult(data: unknown): LookupResult {
     !timestamp(value.looked_up_at) ||
     !Array.isArray(value.sources) ||
     value.sources.length > 3 ||
-    (value.status === "answered"
-      ? value.sources.length === 0
-      : value.sources.length !== 0)
+    (value.status === "answered" && value.sources.length === 0)
   )
     invalid();
 
@@ -274,7 +286,14 @@ export function parseLookupResult(data: unknown): LookupResult {
     (value.data_time === undefined || value.timezone === undefined)
   )
     invalid();
-  if (value.kind === "news") {
+  if (
+    value.kind === "news" ||
+    (value.kind === "briefing" &&
+      (sources.length > 1 ||
+        value.window_start !== undefined ||
+        value.window_end !== undefined ||
+        sources.some((source) => source.published_at !== undefined)))
+  ) {
     if (
       !timestamp(value.window_start) ||
       !timestamp(value.window_end) ||
@@ -285,11 +304,12 @@ export function parseLookupResult(data: unknown): LookupResult {
       end = Date.parse(value.window_end);
     if (
       start > end ||
-      sources.some(
-        (source) =>
-          !source.published_at ||
-          Date.parse(source.published_at) < start ||
-          Date.parse(source.published_at) > end,
+      sources.some((source, index) =>
+        // Only the first briefing citation is weather. Headlines need dates.
+        source.published_at === undefined
+          ? value.kind === "news" || index > 0
+          : Date.parse(source.published_at) < start ||
+            Date.parse(source.published_at) > end,
       )
     )
       invalid();

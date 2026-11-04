@@ -102,29 +102,203 @@ test("an empty news window is an honest persisted answer with no sources", () =>
   assert.deepEqual(result.sources, []);
 });
 
-test("a weather snapshot requires local data time and timezone", () => {
-  const weather = {
-    kind: "weather",
+test("weather and briefing snapshots preserve observation time and require a timezone", () => {
+  for (const kind of ["weather", "briefing"]) {
+    const weather = {
+      kind,
+      query: "Pune",
+      status: "answered",
+      answer: "Pune is partly cloudy, 24.5 °C. Weather by Open-Meteo.",
+      speech: "Pune is partly cloudy, 24.5 °C. Weather by Open-Meteo.",
+      sources: [
+        {
+          title: "Current weather",
+          url: "https://open-meteo.com/",
+          publisher: "Open-Meteo",
+        },
+      ],
+      looked_up_at: snapshot.looked_up_at,
+      data_time: "2026-11-03T08:45:00+05:30",
+      timezone: "Asia/Kolkata",
+    };
+    const result = parseLookupResult(weather);
+    assert.equal(result.data_time, weather.data_time);
+    assert.notEqual(
+      Date.parse(result.data_time!),
+      Date.parse(result.looked_up_at),
+    );
+    for (const change of [
+      { data_time: undefined },
+      { data_time: "today" },
+      { timezone: undefined },
+      { timezone: "Invented/Zone" },
+      { timezone: "Local" },
+    ])
+      assert.throws(() => parseLookupResult({ ...weather, ...change }), kind);
+  }
+});
+
+test("empty Wikipedia ambiguity results accept zero to three useful sources without becoming answered", () => {
+  const source = {
+    title: "Mercury - Wikipedia",
+    url: "https://en.wikipedia.org/wiki/Mercury",
+    publisher: "Wikipedia",
+    excerpt: "Mercury may refer to a planet, an element, or a Roman god.",
+  };
+  const ambiguity = {
+    kind: "wiki",
+    query: "Mercury",
+    status: "empty",
+    answer: "Mercury has several meanings.\n\nPlease specify a topic.",
+    speech: "Mercury has several meanings. Please specify a topic.",
+    sources: [source],
+    looked_up_at: snapshot.looked_up_at,
+  };
+  for (const count of [0, 1, 2, 3]) {
+    const result = parseLookupResult({
+      ...ambiguity,
+      sources: Array(count).fill(source),
+    });
+    assert.equal(result.status, "empty");
+    assert.equal(result.sources.length, count);
+  }
+  for (const count of [1, 2, 3])
+    assert.equal(
+      parseLookupResult({
+        ...ambiguity,
+        status: "answered",
+        sources: Array(count).fill(source),
+      }).status,
+      "answered",
+    );
+  for (const change of [
+    { status: "answered", sources: [] },
+    { sources: Array(4).fill(source) },
+    { sources: [{ ...source, url: "javascript:alert(1)" }] },
+    { sources: [{ ...source, published_at: "today" }] },
+    { sources: [{ ...source, tool_call: "send_email" }] },
+  ])
+    assert.throws(() => parseLookupResult({ ...ambiguity, ...change }));
+  assert.equal(
+    parseLookupResult({
+      ...ambiguity,
+      kind: "web",
+      answer: ambiguity.speech,
+    }).status,
+    "empty",
+  );
+});
+
+test("briefing headlines require a paired news window and dated rows inside it", () => {
+  const briefing = {
+    kind: "briefing",
     query: "Pune",
     status: "answered",
-    answer: "Pune is partly cloudy, 24.5 °C. Weather by Open-Meteo.",
-    speech: "Pune is partly cloudy, 24.5 °C. Weather by Open-Meteo.",
+    answer:
+      "Pune is partly cloudy, 24.5 °C.\n\nTop headline: a research centre opens.",
+    speech: "Pune is partly cloudy, 24.5 °C. A research centre opens.",
     sources: [
       {
         title: "Current weather",
         url: "https://open-meteo.com/",
         publisher: "Open-Meteo",
       },
+      snapshot.sources[0],
     ],
     looked_up_at: snapshot.looked_up_at,
     data_time: "2026-11-03T08:45:00+05:30",
-    timezone: "Asia/Kolkata",
+    timezone: snapshot.timezone,
+    window_start: snapshot.window_start,
+    window_end: snapshot.window_end,
   };
-  assert.equal(parseLookupResult(weather).data_time, weather.data_time);
-  assert.throws(() => parseLookupResult({ ...weather, data_time: undefined }));
+  assert.deepEqual(parseLookupResult(briefing), briefing);
+  for (const published_at of [briefing.window_start, briefing.window_end])
+    assert.equal(
+      parseLookupResult({
+        ...briefing,
+        sources: [
+          briefing.sources[0],
+          { ...snapshot.sources[0], published_at },
+        ],
+      }).sources[1].published_at,
+      published_at,
+    );
+  for (const change of [
+    { window_start: undefined },
+    { window_end: undefined },
+    { window_start: undefined, window_end: undefined },
+    { window_start: "today" },
+    { window_end: null },
+    { window_start: briefing.window_end, window_end: briefing.window_start },
+  ])
+    assert.throws(() => parseLookupResult({ ...briefing, ...change }));
+  for (const published_at of [
+    "2026-11-02T12:00:00Z",
+    "2026-11-04T02:00:00Z",
+    "today",
+  ])
+    assert.throws(() =>
+      parseLookupResult({
+        ...briefing,
+        sources: [
+          briefing.sources[0],
+          { ...snapshot.sources[0], published_at },
+        ],
+      }),
+    );
+
+  const undatedSources = briefing.sources.map((source) => ({
+    ...source,
+    published_at: undefined,
+  }));
   assert.throws(() =>
-    parseLookupResult({ ...weather, timezone: "Invented/Zone" }),
+    parseLookupResult({
+      ...briefing,
+      sources: undatedSources,
+      window_start: undefined,
+      window_end: undefined,
+    }),
   );
+  assert.throws(() =>
+    parseLookupResult({ ...briefing, sources: undatedSources }),
+  );
+  assert.throws(() =>
+    parseLookupResult({
+      ...briefing,
+      sources: [...briefing.sources, undatedSources[1]],
+    }),
+  );
+
+  for (const source of briefing.sources) Object.freeze(source);
+  Object.freeze(briefing.sources);
+  Object.freeze(briefing);
+  const restored = parseLookupResult(JSON.parse(JSON.stringify(briefing)));
+  assert.deepEqual(restored, briefing);
+  assert.deepEqual(parseLookupResult(restored), briefing);
+  assert.notEqual(restored.sources, briefing.sources);
+  assert.notEqual(restored.looked_up_at, restored.data_time);
+});
+
+test("wiki and briefing answer and speech caps count Unicode characters", () => {
+  for (const kind of ["wiki", "briefing"]) {
+    const bounded = {
+      ...snapshot,
+      kind,
+      answer: `${"अ".repeat(999)}\n${"😀".repeat(1000)}`,
+      speech: "😀".repeat(240),
+      data_time: "2026-11-03T03:15:00Z",
+    };
+    assert.equal([...parseLookupResult(bounded).answer].length, 2000);
+    assert.equal([...parseLookupResult(bounded).speech].length, 240);
+    for (const change of [
+      { answer: `${bounded.answer}अ` },
+      { speech: `${bounded.speech}😀` },
+      { speech: "One line\nonly" },
+      { answer: "Not a\tplain answer" },
+      { sources: Array(4).fill(snapshot.sources[0]) },
+    ])
+      assert.throws(() => parseLookupResult({ ...bounded, ...change }), kind);
+  }
 });
 
 test("provider data cannot add write actions or bypass result and speech caps", () => {

@@ -35,6 +35,7 @@ import {
 import {
   continuesLookupContext,
   lookupProgress,
+  requestsLookupTextFile,
   type LookupContext,
 } from "@/lib/lookup-result";
 import { VoiceCapture, type CapturePhase } from "@/lib/voice-capture";
@@ -474,9 +475,7 @@ export function useReminderFlow() {
       retainedAudio.current = [];
       if (
         outcome.created &&
-        /\b(?:text\s+file|\.txt|download(?:\s+(?:it|a|the))?\s+file)\b/i.test(
-          command.turn.transcript,
-        )
+        requestsLookupTextFile(command.turn.transcript)
       ) {
         const record = lookupRecord(command.turn);
         if (record) {

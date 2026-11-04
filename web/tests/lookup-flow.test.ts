@@ -11,6 +11,7 @@ import {
   continuesLookupContext,
   parseLookupContext,
   lookupProgress,
+  requestsLookupTextFile,
   type LookupResult,
 } from "../src/lib/lookup-result.ts";
 import {
@@ -237,6 +238,45 @@ test("all requested demo lookups show Searching, including a spoken place reply"
     continuesLookupContext("What time is it in Tokyo?", weatherPending),
     false,
   );
+  for (const transcript of [
+    "Give me my morning briefing",
+    "सुबह की ब्रीफिंग दो",
+    "Look it up on Wikipedia",
+    "Who was Ada Lovelace?",
+    "Tell me about Mercury",
+    "अल्बर्ट आइंस्टीन के बारे में बताओ",
+    "विकिपीडिया पर बुध खोजो",
+  ]) {
+    assert.equal(
+      continuesLookupContext(transcript, weatherPending),
+      false,
+      transcript,
+    );
+    assert.equal(lookupProgress(transcript, weatherPending), true, transcript);
+  }
+});
+
+test("city names sharing greeting prefixes continue pending briefing and weather lookups", () => {
+  for (const kind of ["briefing", "weather"]) {
+    const context = parseLookupContext({
+      query: { kind, terms: "", place: "", today: kind === "briefing" },
+    });
+    for (const city of ["Hiroshima", "Hisar", "Heysham", "Stopford"]) {
+      assert.equal(
+        continuesLookupContext(city, context),
+        true,
+        `${kind}: ${city}`,
+      );
+      assert.equal(lookupProgress(city, context), true, `${kind}: ${city}`);
+    }
+    for (const transcript of ["Hi", "Hello", "Hey!", "Stop"]) {
+      assert.equal(
+        continuesLookupContext(transcript, context),
+        false,
+        `${kind}: ${transcript}`,
+      );
+    }
+  }
 });
 
 test("a lookup quota error scopes its cooldown to lookup retry", async (t) => {
@@ -464,7 +504,10 @@ test("command request accepts and preserves previous turn context", () => {
     },
   };
   assert.equal(followUpRequest.previous_turn?.topic, "Adolf Hitler");
-  assert.equal(followUpRequest.previous_turn?.transcript, "Tell me about Adolf Hitler");
+  assert.equal(
+    followUpRequest.previous_turn?.transcript,
+    "Tell me about Adolf Hitler",
+  );
 });
 
 test("deadlineInstant computes future ISO timestamp for relative and named days", () => {
@@ -718,6 +761,22 @@ test("briefing place clarification stays read-only and preserves today=true", ()
   assert.equal(response.kind, "clarification");
   if (response.kind !== "clarification") return;
   assert.equal(response.lookupContext?.query.today, true);
+  assert.equal(lookupProgress("Pune, India", response.lookupContext), true);
+  assert.equal(
+    continuesLookupContext("Pune, India", response.lookupContext),
+    true,
+  );
+  assert.equal(
+    continuesLookupContext(
+      "A morning briefing for Pune",
+      response.lookupContext,
+    ),
+    true,
+  );
+  assert.equal(
+    continuesLookupContext("Tell me about Mercury", response.lookupContext),
+    false,
+  );
   assert.throws(() =>
     parseLookupContext({ query: { ...lookup_context.query, today: false } }),
   );
@@ -738,4 +797,160 @@ test("briefing place clarification stays read-only and preserves today=true", ()
       request,
     ),
   );
+});
+
+test("persisted empty lookups keep their reply and export but never replace completed memory", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => {
+    throw new Error("Saved snapshots and exports must not call providers");
+  });
+  const turn = await savedTurn();
+  const completed = await commitLookup(turn, snapshot);
+  const expectedMemory = previousTurnContext([completed.turn], turn.sessionId);
+  assert.equal(expectedMemory?.topic, snapshot.query);
+  for (const [index, sources] of [
+    [],
+    [
+      {
+        title: "Mercury - Wikipedia",
+        url: "https://en.wikipedia.org/wiki/Mercury",
+        publisher: "Wikipedia",
+        excerpt: "Mercury may refer to a planet, an element, or a Roman god.",
+      },
+    ],
+  ].entries()) {
+    const emptyTurn: Turn = {
+      ...turn,
+      id: `empty-${index}`,
+      transcript: "Tell me about Mercury and give me a text file",
+      createdAt: "2026-11-03T03:35:00Z",
+    };
+    const empty: LookupResult = {
+      kind: "wiki",
+      query: "Mercury",
+      status: "empty",
+      answer:
+        index === 0
+          ? "I couldn't find a Wikipedia article for that topic."
+          : "बुध के कई अर्थ हैं। कृपया विषय स्पष्ट करें।",
+      speech:
+        index === 0
+          ? "I couldn't find a Wikipedia article for that topic."
+          : "बुध के कई अर्थ हैं। कृपया विषय स्पष्ट करें।",
+      reply_language: index === 0 ? "en" : "hi",
+      sources,
+      looked_up_at: "2026-11-03T03:35:00Z",
+    };
+    for (const source of sources) Object.freeze(source);
+    Object.freeze(sources);
+    Object.freeze(empty);
+    const response = parseCommandResponse(
+      { ...envelope, command_id: emptyTurn.id, lookup: empty },
+      {
+        ...request,
+        command_id: emptyTurn.id,
+        transcript: emptyTurn.transcript,
+      },
+    );
+    assert.equal(response.kind, "lookup");
+    if (response.kind !== "lookup") return;
+    await storeTurn(emptyTurn);
+    const saved = await commitLookup(emptyTurn, response.result);
+    assert.equal(saved.turn.reply, empty.answer);
+    const reopened = await loadWorkspace();
+    const stored = reopened.turns.find((item) => item.id === emptyTurn.id)!;
+    assert.deepEqual(stored.lookup, empty);
+    assert.deepEqual(
+      previousTurnContext(reopened.turns, turn.sessionId),
+      expectedMemory,
+    );
+    assert.equal(previousTurnContext([stored], turn.sessionId), undefined);
+    assert.deepEqual(reopened.records, []);
+    const exported = resultText(lookupRecord(stored)!);
+    assert.ok(exported.includes(empty.answer));
+    assert.ok(exported.includes(empty.looked_up_at));
+    assert.ok(exported.includes(emptyTurn.transcript));
+    for (const source of sources) assert.ok(exported.includes(source.url));
+    const replay = await commitLookup(emptyTurn, {
+      ...empty,
+      status: "answered",
+      sources: snapshot.sources,
+      answer: "A later answer must not replace the saved ambiguity.",
+      looked_up_at: "2026-11-03T04:00:00Z",
+    });
+    assert.equal(replay.created, false);
+    assert.deepEqual(replay.turn.lookup, empty);
+    assert.equal(resultText(lookupRecord(replay.turn)!), exported);
+  }
+});
+
+test("an abandoned or cancelled place question stays out of persisted previous-turn memory", async () => {
+  const turn = await savedTurn();
+  const completed = await commitLookup(turn, snapshot);
+  const response = parseCommandResponse(
+    {
+      command_id: "pending-place",
+      actions: [],
+      clarification: "कौन सा शहर?",
+      reply_language: "hi",
+      lookup_context: {
+        query: { kind: "weather", terms: "", place: "", today: false },
+        reply_language: "hi",
+      },
+    },
+    { ...request, command_id: "pending-place", transcript: "मौसम बताओ" },
+  );
+  assert.equal(response.kind, "clarification");
+  if (response.kind !== "clarification") return;
+  const pending: Turn = {
+    ...turn,
+    id: "pending-place",
+    transcript: "मौसम बताओ",
+    createdAt: "2026-11-03T03:40:00Z",
+    reply: response.question,
+    replyLanguage: response.replyLanguage,
+    lookupContext: response.lookupContext,
+  };
+  await storeTurn(pending);
+  assert.equal(
+    continuesLookupContext("Tell me about Mercury", pending.lookupContext),
+    false,
+  );
+  const abandoned = { ...pending };
+  delete abandoned.lookupContext;
+  delete abandoned.reply;
+  await storeTurn(abandoned);
+  const reopened = await loadWorkspace();
+  const stored = reopened.turns.find((item) => item.id === pending.id)!;
+  assert.equal(stored.lookupContext, undefined);
+  assert.equal(stored.reply, undefined);
+  assert.deepEqual(
+    previousTurnContext(reopened.turns, turn.sessionId),
+    previousTurnContext([completed.turn], turn.sessionId),
+  );
+  assert.equal(previousTurnContext([stored], turn.sessionId), undefined);
+});
+
+test("a saved conversational reply still supplies previous-turn memory", async () => {
+  const turn = {
+    ...(await savedTurn()),
+    transcript: "Hello",
+    reply: "Hello. How can I help?",
+  };
+  await storeTurn(turn);
+  const reopened = await loadWorkspace();
+  assert.deepEqual(previousTurnContext(reopened.turns, turn.sessionId), {
+    transcript: turn.transcript,
+    reply: turn.reply,
+  });
+});
+
+test("requested lookup text export accepts English, .txt and Hindi without changing save receipts", () => {
+  for (const transcript of [
+    "Tell me about Mercury and give me a text file",
+    "Summarize Gandhi and download the file",
+    "Export the result as .txt",
+    "बुध के बारे में बताओ और टेक्स्ट फ़ाइल दो",
+    "टेक्स्ट फाइल डाउनलोड करो",
+  ]) assert.equal(requestsLookupTextFile(transcript), true, transcript);
+  assert.equal(requestsLookupTextFile("Tell me about Mercury"), false);
 });
