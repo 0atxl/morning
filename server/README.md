@@ -336,11 +336,13 @@ Send one JSON object with `text`, a single line of 1 to 240 Unicode characters w
 
 ## Meeting minutes
 
-After a meeting ends, send the completed transcript in order to `POST /api/minutes` with `Content-Type: application/json`. The entire request body can contain up to 64 KiB. The endpoint uses the existing Groq key and shares the command endpoint's rate limit. Requests spoken during the meeting are discussion. The endpoint returns editable text and performs no reminder, draft or email operations.
+Send pasted meeting notes or a completed spoken transcript in order to `POST /api/minutes` with `Content-Type: application/json`. This endpoint does not record a live or remote meeting. The entire JSON request body can contain up to 64 KiB. The endpoint uses the existing Groq key and shares the command endpoint's rate limit. Embedded reminder, email and language-change instructions are discussion, not commands. The endpoint returns editable text, calls no tools and performs no reminder, draft, email or storage writes.
 
 ```json
-{"transcript":"We’ll ship Friday. Priya will send the slides. We haven’t decided who runs QA."}
+{"transcript":"We’ll ship Friday. Priya will send the slides. We haven’t decided who runs QA.","language":"en"}
 ```
+
+`language` is optional and accepts only `"en"` or `"hi"`. Omitting it selects English, regardless of the transcript's language or embedded instructions. Explicit `null`, empty strings, unsupported values and nonstrings return `400 invalid_request`. The selected language applies to the summary, decisions, action-item tasks and open questions. Owners, deadlines and provider-only supporting quotes retain the transcript's wording without translation.
 
 Example `200 OK` response
 
@@ -355,7 +357,9 @@ Example `200 OK` response
 }
 ```
 
-All four fields are present. Empty sections are `[]`. Each task has `task`, `owner` and `deadline`; owner and deadline are required fields with a string or null value. A stated deadline keeps the speaker's wording. The backend limits summary to 800 Unicode characters, decisions/questions/tasks to 500 each and owner/deadline to 200 each. Provider-only `source` quotes are removed before returning the response. This endpoint returns minutes directly, without a command action or clarification envelope. The browser stores them on `Turn.minutes`; browser response validation and editing remain pending. Retain the transcript if the request fails.
+The response contains exactly these four fields. Empty sections are `[]`, never null. Each of `decisions`, `action_items` and `open_questions` contains at most 20 entries. Each action item has `task`, `owner` and `deadline`; owner and deadline are required keys with a string or null value. The backend rejects missing keys and unknown fields in provider output rather than relying on the provider schema alone. Owners and deadlines must be quoted from that task's verbatim supporting clause; missing values remain null.
+
+All returned text fields are single-line. The backend limits summary to 800 Unicode characters, decisions/questions/tasks to 500 each and owner/deadline to 200 each. Provider-only `source` quotes are validated and removed before returning the response. This endpoint returns minutes directly, without a command action, clarification envelope or receipt. The browser must validate the response, store edited minutes locally and keep a stable turn receipt. For a local save retry, reuse the validated response rather than requesting new minutes. Retain the transcript if the API request fails.
 
 A blank transcript returns `400 Bad Request`.
 
