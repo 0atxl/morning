@@ -27,6 +27,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { MinutesResultContent } from "@/components/minutes-result-content";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,15 +37,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  deadlineInstant,
   downloadResult,
   formatDue,
   gmailComposeUrl,
   googleCalendarUrl,
   localInputDate,
-  minutesComposeUrl,
   resultText,
-  type MeetingMinutes,
   type WorkspaceResult,
 } from "@/lib/results";
 import { safeLookupLink, type LookupResult } from "@/lib/lookup-result";
@@ -56,7 +54,12 @@ type Props = {
   onSave: (result: WorkspaceResult) => Promise<void>;
   onRestoreFocus: () => void;
   onPlayReply: (text: string, language?: "en" | "hi") => void;
-  onCreateReminder?: (title: string, dueAt: string) => Promise<unknown>;
+  onCreateReminder?: (
+    minutesId: string,
+    actionItemId: string,
+    title: string,
+    dueAt: string,
+  ) => Promise<void>;
 };
 
 export function ResultQuickView({
@@ -167,6 +170,7 @@ export function ResultQuickView({
           <ResultContent
             key={result.id}
             result={result}
+            onSelect={onSelect}
             onSave={onSave}
             onPlayReply={onPlayReply}
             onCreateReminder={onCreateReminder}
@@ -179,14 +183,45 @@ export function ResultQuickView({
 
 function ResultContent({
   result,
+  onSelect,
   onSave,
   onPlayReply,
   onCreateReminder,
 }: {
   result: WorkspaceResult;
+  onSelect: Props["onSelect"];
   onSave: Props["onSave"];
   onPlayReply: Props["onPlayReply"];
   onCreateReminder?: Props["onCreateReminder"];
+}) {
+  if (result.kind === "minutes") {
+    return (
+      <MinutesResultContent
+        result={result}
+        onSave={onSave}
+        onPlayReply={onPlayReply}
+        onCreateReminder={onCreateReminder}
+        onSelectReminder={onSelect}
+      />
+    );
+  }
+  return (
+    <OtherResultContent
+      result={result}
+      onSave={onSave}
+      onPlayReply={onPlayReply}
+    />
+  );
+}
+
+function OtherResultContent({
+  result,
+  onSave,
+  onPlayReply,
+}: {
+  result: Exclude<WorkspaceResult, { kind: "minutes" }>;
+  onSave: Props["onSave"];
+  onPlayReply: Props["onPlayReply"];
 }) {
   const [editing, setEditing] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -204,7 +239,7 @@ function ResultContent({
   const [body, setBody] = useState(result.kind === "draft" ? result.body : "");
 
   function beginEdit() {
-    if (result.kind === "lookup" || result.kind === "minutes") return;
+    if (result.kind === "lookup") return;
     setTitle(result.title);
     if (result.kind === "reminder") setDue(localInputDate(result.dueAt));
     else {
@@ -219,13 +254,7 @@ function ResultContent({
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (
-      !editing ||
-      savingRef.current ||
-      result.kind === "lookup" ||
-      result.kind === "minutes"
-    )
-      return;
+    if (!editing || savingRef.current || result.kind === "lookup") return;
     setActionError("");
     let updated: WorkspaceResult;
     if (result.kind === "reminder") {
@@ -365,11 +394,6 @@ function ResultContent({
           </fieldset>
         ) : result.kind === "lookup" ? (
           <LookupContent lookup={result.lookup} />
-        ) : result.kind === "minutes" ? (
-          <MinutesContent
-            minutes={result.minutes}
-            onCreateReminder={onCreateReminder}
-          />
         ) : result.kind === "draft" ? (
           <>
             <dl className="draft-metadata">
@@ -477,27 +501,6 @@ function ResultContent({
                 >
                   <Volume2 /> Play reply
                 </Button>
-              ) : result.kind === "minutes" ? (
-                <>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => onPlayReply(result.minutes.summary, "en")}
-                  >
-                    <Volume2 /> Play summary
-                  </Button>
-                  <Button asChild variant="outline">
-                    <a
-                      href={minutesComposeUrl(result.minutes)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      aria-label="Email minutes via Gmail (opens in a new tab)"
-                    >
-                      <ArrowUpRight aria-hidden="true" />
-                      Email minutes
-                    </a>
-                  </Button>
-                </>
               ) : (
                 <Button type="button" variant="outline" onClick={beginEdit}>
                   <Pencil />
@@ -642,135 +645,6 @@ function LookupContent({ lookup }: { lookup: LookupResult }) {
             );
           })}
         </ul>
-      )}
-    </div>
-  );
-}
-
-function MinutesContent({
-  minutes,
-  onCreateReminder,
-}: {
-  minutes: MeetingMinutes;
-  onCreateReminder?: Props["onCreateReminder"];
-}) {
-  const [addedItems, setAddedItems] = useState<Record<number, boolean>>({});
-
-  return (
-    <div className="minutes-details">
-      <div className="field">
-        <p className="detail-label">Summary</p>
-        <p className="draft-body">{minutes.summary}</p>
-      </div>
-
-      {minutes.decisions && minutes.decisions.length > 0 && (
-        <div className="field">
-          <p className="detail-label">Decisions</p>
-          <ul className="lookup-sources" aria-label="Decisions">
-            {minutes.decisions.map((decision, index) => (
-              <li
-                key={index}
-                className="field-hint"
-                style={{ listStyleType: "disc", marginLeft: "1.25rem" }}
-              >
-                {decision}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {minutes.action_items && minutes.action_items.length > 0 && (
-        <div className="field">
-          <p className="detail-label">Action Items</p>
-          <ul className="lookup-sources" aria-label="Action items">
-            {minutes.action_items.map((item, index) => (
-              <li
-                key={index}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  padding: "0.5rem 0.75rem",
-                  border: "1px solid var(--border)",
-                  borderRadius: "var(--radius)",
-                  gap: "0.5rem",
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontWeight: 500 }}>{item.task}</p>
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: "0.75rem",
-                      marginTop: "0.25rem",
-                      flexWrap: "wrap",
-                    }}
-                  >
-                    {item.owner && (
-                      <span className="field-hint">
-                        Owner: <strong>{item.owner}</strong>
-                      </span>
-                    )}
-                    {item.deadline && (
-                      <span className="field-hint">
-                        Deadline: <strong>{item.deadline}</strong>
-                      </span>
-                    )}
-                  </div>
-                </div>
-                {onCreateReminder && (
-                  <Button
-                    type="button"
-                    variant={addedItems[index] ? "ghost" : "outline"}
-                    size="sm"
-                    disabled={addedItems[index]}
-                    onClick={async () => {
-                      const title = item.owner
-                        ? `${item.task} (${item.owner})`
-                        : item.task;
-                      const dueAt = deadlineInstant(item.deadline);
-                      try {
-                        await onCreateReminder(title, dueAt);
-                        setAddedItems((prev) => ({ ...prev, [index]: true }));
-                      } catch {}
-                    }}
-                    style={{ flexShrink: 0 }}
-                  >
-                    {addedItems[index] ? (
-                      <>
-                        <Check size={14} aria-hidden="true" />
-                        Added
-                      </>
-                    ) : (
-                      <>
-                        <CalendarClock size={14} aria-hidden="true" />
-                        + Reminder
-                      </>
-                    )}
-                  </Button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {minutes.open_questions && minutes.open_questions.length > 0 && (
-        <div className="field">
-          <p className="detail-label">Open Questions</p>
-          <ul className="lookup-sources" aria-label="Open questions">
-            {minutes.open_questions.map((question, index) => (
-              <li
-                key={index}
-                className="field-hint"
-                style={{ listStyleType: "circle", marginLeft: "1.25rem" }}
-              >
-                {question}
-              </li>
-            ))}
-          </ul>
-        </div>
       )}
     </div>
   );

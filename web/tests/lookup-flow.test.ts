@@ -26,13 +26,14 @@ import {
   type Turn,
 } from "../src/lib/reminder-store.ts";
 import {
-  deadlineInstant,
+
   minutesComposeUrl,
   nextRecurringDue,
   resultText,
   type WorkspaceResult,
 } from "../src/lib/results.ts";
 import { SpokenReply } from "../src/lib/spoken-reply.ts";
+import { confirmedReminderInstant } from "../src/lib/minutes.ts";
 
 // Offline definitions only. Each case uses a fresh, in-memory guest workspace.
 const originalFactory = Object.getOwnPropertyDescriptor(
@@ -510,17 +511,11 @@ test("command request accepts and preserves previous turn context", () => {
   );
 });
 
-test("deadlineInstant computes future ISO timestamp for relative and named days", () => {
-  const tomorrow = deadlineInstant("tomorrow");
-  assert.ok(tomorrow.includes("T09:00:00.000Z"));
-  assert.ok(Date.parse(tomorrow) > Date.now());
-
-  const thursday = deadlineInstant("Thursday");
-  assert.ok(thursday.includes("T09:00:00.000Z"));
-  assert.ok(Date.parse(thursday) > Date.now());
-
-  const fallback = deadlineInstant(null);
-  assert.ok(fallback.includes("T09:00:00.000Z"));
+test("minutes deadlines need an explicitly confirmed future date and time", () => {
+  for (const unresolved of ["", "tomorrow", "Thursday", "कल"])
+    assert.throws(() => confirmedReminderInstant(unresolved));
+  const confirmed = confirmedReminderInstant("2099-06-15T09:30");
+  assert.ok(Date.parse(confirmed) > Date.now());
 });
 
 test("minutesComposeUrl generates valid Gmail compose URL with prefilled minutes text", () => {

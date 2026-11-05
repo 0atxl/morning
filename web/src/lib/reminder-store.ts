@@ -1,5 +1,10 @@
 import { ownerKey, type MailSchedule } from "./reminder-alerts.ts";
-import type { CommandAction, CommandRequest } from "./command-api.ts";
+import {
+  parseCommandResponse,
+  type CommandAction,
+  type CommandRequest,
+} from "./command-api.ts";
+import { minutesSpeech, parseMeetingMinutes } from "./minutes.ts";
 import type { SpeechLanguage } from "./language.ts";
 import {
   parseLookupResult,
@@ -32,6 +37,8 @@ export type Turn = {
   lookup?: LookupResult;
   lookupContext?: LookupContext;
   minutes?: MeetingMinutes;
+  minutesInputLanguage?: SpeechLanguage;
+  minutesReminderIds?: Record<string, string>;
 };
 export const earlierActivity = "earlier-activity";
 
@@ -383,56 +390,278 @@ export function minutesRecord(turn: Turn): StoredMinutes | null {
     transcript: turn.transcript,
     kind: "minutes",
     title: "Meeting Minutes",
-    minutes: turn.minutes,
+    minutes: {
+      ...turn.minutes,
+      action_items: turn.minutes.action_items.map((item, index) => ({
+        ...item,
+        id: item.id ?? `item:${index}`,
+      })),
+    },
+    replyLanguage: turn.replyLanguage ?? "en",
   };
+}
+
+export async function storeMinutesInput(turn: Turn) {
+  await writeWorkspace(["turns", "sessions", "settings"], (tx) => {
+    tx.objectStore("sessions").get(turn.sessionId).onsuccess = (event) => {
+      if (!(event.target as IDBRequest).result) {
+        tx.abort();
+        return;
+      }
+      tx.objectStore("settings").get("selectedSession").onsuccess = (
+        selected,
+      ) => {
+        if ((selected.target as IDBRequest).result !== turn.sessionId) {
+          tx.abort();
+          return;
+        }
+        const store = tx.objectStore("turns");
+        store.get(turn.id).onsuccess = (read) => {
+          const original = (read.target as IDBRequest).result as
+            Turn | undefined;
+          if (
+            original &&
+            (original.sessionId !== turn.sessionId ||
+              original.transcript !== turn.transcript)
+          ) {
+            tx.abort();
+            return;
+          }
+          if (!original) store.add(turn);
+        };
+      };
+    };
+  });
 }
 
 export async function commitMinutes(
   turn: Turn,
   minutes: MeetingMinutes,
+  language: SpeechLanguage = "en",
 ): Promise<{ turn: Turn; created: boolean }> {
-  const db = await openStore();
-  const stored: Turn = { ...turn, minutes };
+  const parsed = parseMeetingMinutes(minutes);
   let created = false;
   let saved: Turn | undefined;
-  await new Promise<void>((resolve, reject) => {
-    let tx: IDBTransaction;
-    try {
-      tx = db.transaction(["turns", "commands"], "readwrite");
-    } catch {
-      db.close();
-      reject(storageError());
-      return;
-    }
-    tx.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    tx.onerror = () => {
-      db.close();
-      reject(storageError());
-    };
-    const commands = tx.objectStore("commands");
-    commands.get(turn.id).onsuccess = (event) => {
-      const existing = (event.target as IDBRequest).result as
-        | Receipt
-        | undefined;
-      if (!existing) {
-        created = true;
-        commands.add({ commandId: turn.id });
+  await writeWorkspace(["turns", "sessions", "settings"], (tx) => {
+    tx.objectStore("sessions").get(turn.sessionId).onsuccess = (event) => {
+      if (!(event.target as IDBRequest).result) {
+        tx.abort();
+        return;
       }
-      const turns = tx.objectStore("turns");
-      turns.get(turn.id).onsuccess = (turnEvent) => {
-        const found = (turnEvent.target as IDBRequest).result as
-          | Turn
-          | undefined;
-        saved = found?.minutes ? found : stored;
-        turns.put(saved);
+      tx.objectStore("settings").get("selectedSession").onsuccess = (
+        selected,
+      ) => {
+        if ((selected.target as IDBRequest).result !== turn.sessionId) {
+          tx.abort();
+          return;
+        }
+        const store = tx.objectStore("turns");
+        store.get(turn.id).onsuccess = (event) => {
+          const original = (event.target as IDBRequest).result as
+            Turn | undefined;
+          if (
+            !original ||
+            original.sessionId !== turn.sessionId ||
+            original.transcript !== turn.transcript
+          ) {
+            tx.abort();
+            return;
+          }
+          if (original.minutes) {
+            saved = original;
+            return;
+          }
+          saved = {
+            ...original,
+            minutes: {
+              ...parsed,
+              action_items: parsed.action_items.map((item, index) => ({
+                ...item,
+                id: `item:${index}`,
+              })),
+            },
+            reply: minutesSpeech(parsed.summary, language),
+            replyLanguage: language,
+          };
+          delete saved.lookupContext;
+          store.put(saved);
+          created = true;
+        };
       };
     };
   });
   if (!saved) throw storageError();
   return { turn: saved, created };
+}
+
+export async function updateMinutes(
+  result: MinutesResult,
+  sessionId: string,
+): Promise<Turn> {
+  const parsed = parseMeetingMinutes({
+    ...result.minutes,
+    action_items: result.minutes.action_items.map(
+      ({ task, owner, deadline }) => ({ task, owner, deadline }),
+    ),
+  });
+  const itemIds = result.minutes.action_items.map(
+    (item, index) => item.id ?? `item:${index}`,
+  );
+  if (
+    !result.id.startsWith("minutes:") ||
+    itemIds.some((id) => typeof id !== "string" || !id || id.length > 128) ||
+    new Set(itemIds).size !== itemIds.length
+  ) {
+    throw new Error(
+      "Each action item needs a unique saved identity. Reopen these minutes before editing.",
+    );
+  }
+  let saved: Turn | undefined;
+  await writeWorkspace(["turns", "sessions", "settings"], (tx) => {
+    tx.objectStore("sessions").get(sessionId).onsuccess = (event) => {
+      if (!(event.target as IDBRequest).result) {
+        tx.abort();
+        return;
+      }
+      tx.objectStore("settings").get("selectedSession").onsuccess = (
+        selected,
+      ) => {
+        if ((selected.target as IDBRequest).result !== sessionId) {
+          tx.abort();
+          return;
+        }
+        const store = tx.objectStore("turns");
+        store.get(result.id.replace(/^minutes:/, "")).onsuccess = (event) => {
+          const original = (event.target as IDBRequest).result as
+            Turn | undefined;
+          if (!original?.minutes || original.sessionId !== sessionId) {
+            tx.abort();
+            return;
+          }
+          const links = { ...original.minutesReminderIds };
+          original.minutes.action_items.forEach((item, index) => {
+            if (item.reminderId)
+              links[item.id ?? `item:${index}`] = item.reminderId;
+          });
+          const items = parsed.action_items.map((item, index) => {
+            const id = itemIds[index];
+            return {
+              ...item,
+              id,
+              ...(Object.hasOwn(links, id) ? { reminderId: links[id] } : {}),
+            };
+          });
+          saved = {
+            ...original,
+            minutes: { ...parsed, action_items: items },
+            minutesReminderIds: links,
+            reply: minutesSpeech(
+              parsed.summary,
+              original.replyLanguage ?? "en",
+            ),
+          };
+          store.put(saved);
+        };
+      };
+    };
+  });
+  if (!saved) throw storageError();
+  return saved;
+}
+
+export async function createMinutesReminder(
+  minutesId: string,
+  actionItemId: string,
+  title: string,
+  dueAt: string,
+  sessionId: string,
+) {
+  if (!minutesId.startsWith("minutes:"))
+    throw new Error("Open saved minutes before creating a reminder.");
+  let saved: Turn | undefined;
+  let reminder: StoredReminder | undefined;
+  let created = false;
+  await writeWorkspace(["turns", "sessions", "settings", "reminders"], (tx) => {
+    tx.objectStore("sessions").get(sessionId).onsuccess = (event) => {
+      if (!(event.target as IDBRequest).result) {
+        tx.abort();
+        return;
+      }
+      tx.objectStore("settings").get("selectedSession").onsuccess = (
+        selected,
+      ) => {
+        if ((selected.target as IDBRequest).result !== sessionId) {
+          tx.abort();
+          return;
+        }
+        const turns = tx.objectStore("turns");
+        turns.get(minutesId.replace(/^minutes:/, "")).onsuccess = (event) => {
+          const original = (event.target as IDBRequest).result as
+            Turn | undefined;
+          if (!original?.minutes || original.sessionId !== sessionId) {
+            tx.abort();
+            return;
+          }
+          const item = original.minutes.action_items.find(
+            (entry, i) => (entry.id ?? `item:${i}`) === actionItemId,
+          );
+          if (!item) {
+            tx.abort();
+            return;
+          }
+          const linkedId =
+            item.reminderId ??
+            (Object.hasOwn(original.minutesReminderIds ?? {}, actionItemId)
+              ? original.minutesReminderIds![actionItemId]
+              : undefined);
+          const reminderId = linkedId ?? crypto.randomUUID();
+          const reminders = tx.objectStore("reminders");
+          reminders.get(reminderId).onsuccess = (event) => {
+            const existing = (event.target as IDBRequest).result as
+              StoredReminder | undefined;
+            if (
+              linkedId &&
+              (!existing ||
+                existing.sessionId !== sessionId ||
+                existing.kind !== "reminder")
+            ) {
+              tx.abort();
+              return;
+            }
+            if (existing) {
+              reminder = existing;
+              if (item.reminderId !== existing.id) {
+                item.reminderId = existing.id;
+                turns.put(original);
+              }
+              saved = original;
+              return;
+            }
+            try {
+              reminder = manualReminder(reminderId, title, dueAt, sessionId);
+            } catch {
+              tx.abort();
+              return;
+            }
+            item.id = actionItemId;
+            item.reminderId = reminder.id;
+            original.minutesReminderIds = {
+              ...original.minutesReminderIds,
+              [actionItemId]: reminder.id,
+            };
+            saved = original;
+            turns.put(saved);
+            queueOwnerMail(tx, reminder);
+            reminders.add(reminder);
+            created = true;
+          };
+        };
+      };
+    };
+  });
+  if (!saved || !reminder) throw storageError();
+  signalReminderChange();
+  return { turn: saved, reminder, created };
 }
 
 export function recordsForCommand(
@@ -693,24 +922,48 @@ export async function commitCommand(
   });
 }
 
+function manualReminder(
+  id: string,
+  title: string,
+  dueAt: string,
+  sessionId: string,
+): StoredReminder {
+  const request: CommandRequest = {
+    command_id: id,
+    transcript: "",
+    now: new Date().toISOString(),
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
+  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(title))
+    throw new Error("Use a single-line reminder title.");
+  const response = parseCommandResponse(
+    {
+      command_id: id,
+      actions: [
+        {
+          type: "create_reminder",
+          title,
+          due_at: dueAt.replace(/Z$/, "+00:00"),
+        },
+      ],
+      clarification: null,
+    },
+    request,
+  );
+  if (response.kind !== "actions") throw storageError();
+  return recordsForCommand(
+    request,
+    response.actions,
+    sessionId,
+  )[0] as StoredReminder;
+}
+
 export async function addManualReminder(
   title: string,
   dueAt: string,
   sessionId: string,
 ): Promise<StoredReminder> {
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-  const reminder: StoredReminder = {
-    id,
-    kind: "reminder",
-    title,
-    transcript: "",
-    dueAt,
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    commandId: id,
-    createdAt: now,
-    sessionId,
-  };
+  const reminder = manualReminder(crypto.randomUUID(), title, dueAt, sessionId);
   await writeWorkspace(["reminders", "settings"], (tx) => {
     queueOwnerMail(tx, reminder);
     tx.objectStore("reminders").add(reminder);
@@ -722,6 +975,8 @@ export async function addManualReminder(
 export async function updateResult(
   result: WorkspaceResult,
 ): Promise<StoredResult> {
+  if (result.kind === "minutes")
+    throw new Error("Save minutes through their conversation turn.");
   if (result.kind === "lookup")
     throw new Error(
       "A saved lookup is read-only. Record a new question for fresh information.",

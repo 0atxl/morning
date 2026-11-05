@@ -34,9 +34,21 @@ The glass orb measures volume from the recording stream. Its inner colors swell 
 
 The client accepts one new reminder, one new draft, both together, one `reschedule_reminder`, one `update_draft`, a conversational reply, or a clarification. Updates cannot be combined with other saved actions. The sole reminder and draft in the recording's conversation supply context; with multiple possible targets, the user chooses a snapshot for the original request. New email drafts are prompted to be developed and grounded in supplied facts. The app limits allow 30 mic starts, 60 commands and 60 speech requests per public IP per minute, within global caps of 300, 600 and 600. The frontend reports HTTP status for a non-JSON proxy failure, and provider HTTP 429 has its own error category. Increasing app limits does not change provider account quotas.
 
-Reminder Quick View offers Download .ics and Add to Google Calendar. Both create a one-minute marker at the saved due instant; the user imports or saves it. Calendar copies do not sync with later edits. The export follows [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545) and the link follows [Google's event-template format](https://developers.google.com/workspace/calendar/api/concepts/inviting-attendees-to-events). Spoken event commands save only the start as a reminder; the event end is not retained and full-duration scheduling is not available. Browser minutes validation and editing are still pending.
+Reminder Quick View offers Download .ics and Add to Google Calendar. Both create a one-minute marker at the saved due instant; the user imports or saves it. Calendar copies do not sync with later edits. The export follows [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545) and the link follows [Google's event-template format](https://developers.google.com/workspace/calendar/api/concepts/inviting-attendees-to-events). Spoken event commands save only the start as a reminder; the event end is not retained and full-duration scheduling is not available.
 
 Due alerts stay in browser storage until dismissed. Only a focused, visible tab with audio enabled claims the automatic chime; Play chime is also available. Paired owner browsers can schedule private Gmail reminders. Email status announces acceptance only after a fresh queue read finds no pending revisions. The landing page opens at `/`, Try Morning links to `/app`, and Presentation opens `/presentation.html`. Local packaged installation and phone sync remain plans. These changes have not been exercised with a browser, mic or live provider.
+
+## Meeting minutes
+
+Open **Meeting minutes** to paste notes or a completed spoken transcript and choose English or Hindi. For dictation, begin with "Take meeting minutes" or "Take meeting minutes in Hindi", dictate the discussion, then stop. This submits one completed transcript. Morning does not continuously record meetings or capture remote participants.
+
+Discussion is data. Reminder, email and download instructions inside it do not execute. The browser validates the direct minutes response before saving. Requests are limited to 64 KiB including JSON encoding, with no silent shortening. Each section allows 20 entries. Summary text allows 800 Unicode characters, tasks/decisions/questions 500, and nullable owner/deadline text 200.
+
+Quick View edits all four sections. Save changes before playback, copying, text download, Gmail compose or reminder creation. Edits survive refresh. Speech uses the chosen language and at most 240 characters; long summaries use complete sentences or a short saved-minutes message. Gmail opens a compose window for review, never sends mail automatically.
+
+Each task shows its extracted deadline. No deadline is guessed. **Create reminder** requires a title and a separately confirmed future date/time in the displayed browser timezone. Missing or ambiguous wording stays unresolved until then. The reminder and task link save atomically. Rapid clicks, retries, reopening and refresh reuse the same reminder. Editing a linked task keeps the link and leaves the reminder unchanged; open the reminder to edit its title or schedule. Removing a task does not delete its reminder.
+
+API failures keep the input. Save retries reuse the validated response and original turn ID. Minutes requests hold the existing busy/session lock, and storage checks the original conversation before committing. The minutes fixture definitions are authored but have not been executed. No browser or provider verification is claimed.
 
 ## Guest contacts and drafts
 

@@ -99,6 +99,7 @@ export function App() {
   const openedRequest = useRef<string | null>(null);
   const returnFocus = useRef<HTMLButtonElement | null>(null);
   const contactsButton = useRef<HTMLButtonElement | null>(null);
+  const minutesButton = useRef<HTMLButtonElement | null>(null);
   const selected =
     live.results.find((result) => result.id === selectedId) ?? null;
   const canRecord = () =>
@@ -115,7 +116,11 @@ export function App() {
     live.releaseHold,
     live.cancelHold,
     () =>
-      !contactsOpen && !selected && view.phase !== "listening" && canRecord(),
+      !contactsOpen &&
+      !minutesOpen &&
+      !selected &&
+      view.phase !== "listening" &&
+      canRecord(),
   );
 
   useEffect(() => {
@@ -347,12 +352,14 @@ export function App() {
             <Users /> Contacts
           </Button>
           <Button
+            ref={minutesButton}
             variant="ghost"
             size="sm"
             className="contacts-trigger"
+            disabled={!live.canSummarize}
             onClick={() => setMinutesOpen(true)}
           >
-            <ClipboardList /> Meeting Minutes
+            <ClipboardList /> Meeting minutes
           </Button>
         </footer>
       </div>
@@ -375,10 +382,17 @@ export function App() {
       />
       <MeetingMinutesDialog
         open={minutesOpen}
+        sessionId={selectedSession}
+        sessionLabel={sessionLabel ?? "this conversation"}
+        initialTranscript={live.minutesDraft?.transcript}
+        initialLanguage={live.minutesDraft?.minutesInputLanguage}
         onOpenChange={setMinutesOpen}
         onSummarize={live.summarizeMeeting}
-        onSelectResult={(id) => setSelectedId(id)}
-        onRestoreFocus={() => contactsButton.current?.focus()}
+        onSelectResult={(id) => {
+          returnFocus.current = minutesButton.current;
+          setSelectedId(id);
+        }}
+        onRestoreFocus={() => minutesButton.current?.focus()}
       />
     </TooltipProvider>
   );

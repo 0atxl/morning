@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   interpretCommand,
-  postJSON,
   withSelectedContact,
   withSelectedReminder,
   withSelectedDraft,
@@ -11,7 +10,9 @@ import {
 } from "@/lib/command-api";
 import {
   addGuestContact,
-  addManualReminder,
+  createMinutesReminder,
+  updateMinutes,
+  storeMinutesInput,
   commitCommand,
   commitLookup,
   commitMinutes,
@@ -52,6 +53,12 @@ import {
   type WorkspaceResult,
 } from "@/lib/results";
 import { idleExecution, type ExecutionActivity } from "@/lib/execution";
+import {
+  meetingCommand,
+  minutesRequest,
+  minutesSpeech,
+  requestMeetingMinutes,
+} from "@/lib/minutes";
 import {
   relevantContacts,
   type ContactOption,
@@ -107,6 +114,13 @@ type Pending = {
   response?: CommandResponse;
   reminders: StoredReminder[];
   drafts: StoredDraft[];
+  minutes?: MeetingMinutes;
+};
+type PendingMinutes = {
+  turn: Turn;
+  turnSaved: boolean;
+  minutes?: MeetingMinutes;
+  language: SpeechLanguage;
 };
 
 function errorMessage(error: unknown) {
@@ -151,6 +165,9 @@ export function useReminderFlow() {
   const captureOwner = useRef<"pointer" | "hold" | null>(null);
   const retainedAudio = useRef<Blob[]>([]);
   const pending = useRef<Pending | null>(null);
+  const pastedMinutes = useRef<PendingMinutes | null>(null);
+  const retryTarget = useRef<"voice" | "minutes">("voice");
+  const minutesBusy = useRef(false);
   const requestAbort = useRef<AbortController | null>(null);
   const loadFailed = useRef(false);
   const speech = useRef<SpokenReply | null>(null);
@@ -214,7 +231,27 @@ export function useReminderFlow() {
       selectedSessionRef.current = stored.selectedSession;
       setContacts(stored.contacts);
       loadFailed.current = false;
-      setView((previous) => ({ ...previous, phase: "ready", error: "" }));
+      const unfinished = stored.turns
+        .filter((turn) => turn.sessionId === stored.selectedSession)
+        .at(-1);
+      if (unfinished?.minutesInputLanguage && !unfinished.minutes) {
+        pastedMinutes.current = {
+          turn: unfinished,
+          turnSaved: true,
+          language: unfinished.minutesInputLanguage,
+        };
+        retryTarget.current = "minutes";
+        setCommandSession(unfinished.sessionId);
+        setView({
+          ...readyVoice,
+          phase: "error",
+          turnId: unfinished.id,
+          captions: { final: unfinished.transcript, interim: "" },
+          error:
+            "Your meeting notes are saved, but minutes are unfinished. Retry to continue the same request.",
+        });
+      } else
+        setView((previous) => ({ ...previous, phase: "ready", error: "" }));
     } catch (error) {
       if (!current(id)) return;
       loadFailed.current = true;
@@ -229,7 +266,8 @@ export function useReminderFlow() {
   }
 
   async function selectSession(id?: string) {
-    if (selectingRef.current || id === selectedSession) return;
+    if (selectingRef.current || minutesBusy.current || id === selectedSession)
+      return;
     selectingRef.current = true;
     setSelecting(true);
     setSelectionError("");
@@ -305,6 +343,176 @@ export function useReminderFlow() {
     // Startup opens local storage. Audio starts only from user actions or a new save.
   }, []);
 
+  async function saveMeeting(
+    command: { turn: Turn; turnSaved: boolean; minutes?: MeetingMinutes },
+    language: SpeechLanguage,
+    id: number,
+  ) {
+    const ownsRequest = () =>
+      current(id) && selectedSessionRef.current === command.turn.sessionId;
+    if (!ownsRequest())
+      throw new Error(
+        "The conversation changed. Return to the original session and retry your notes.",
+      );
+    reportExecution({
+      requestId: command.turn.id,
+      stages: ["PEN"],
+      status: "Summarizing meeting notes",
+      running: true,
+    });
+    setView((previous) => ({
+      ...previous,
+      turnId: command.turn.id,
+      phase: "processing",
+      captions: { final: command.turn.transcript, interim: "" },
+      status: "Summarizing meeting notes",
+      error: "",
+    }));
+    if (!command.turnSaved) {
+      command.turn = { ...command.turn, minutesInputLanguage: language };
+      await storeMinutesInput(command.turn);
+      command.turnSaved = true;
+      if (current(id))
+        setTurns((previous) => [
+          ...previous.filter((turn) => turn.id !== command.turn.id),
+          command.turn,
+        ]);
+    }
+    if (!ownsRequest())
+      throw new Error(
+        "The minutes request was cancelled. Your notes are still available.",
+      );
+    if (!command.minutes) {
+      const abort = new AbortController();
+      requestAbort.current = abort;
+      command.minutes = await requestMeetingMinutes(
+        command.turn.transcript,
+        language,
+        abort.signal,
+      );
+    }
+    if (!ownsRequest())
+      throw new Error(
+        "The conversation changed. No minutes were saved to another session.",
+      );
+    saving.current = true;
+    setView((previous) => ({
+      ...previous,
+      phase: "saving",
+      status: "Saving meeting minutes",
+      error: "",
+    }));
+    let outcome: Awaited<ReturnType<typeof commitMinutes>>;
+    try {
+      outcome = await commitMinutes(command.turn, command.minutes, language);
+    } finally {
+      saving.current = false;
+    }
+    command.turn = outcome.turn;
+    if (!ownsRequest())
+      throw new Error(
+        "The minutes request was cancelled. Open the original conversation to check its saved minutes.",
+      );
+    setTurns((previous) =>
+      previous.map((turn) =>
+        turn.id === outcome.turn.id ? outcome.turn : turn,
+      ),
+    );
+    reportExecution({
+      requestId: command.turn.id,
+      stages: ["PEN"],
+      status: "Minutes saved",
+      running: false,
+    });
+    setView((previous) => ({
+      ...previous,
+      phase: "saved",
+      status: outcome.turn.reply ?? "Minutes saved",
+      question: "",
+      options: [],
+      reminderOptions: [],
+      draftOptions: [],
+      lookupContext: undefined,
+      deliveryNotice: "",
+      error: "",
+      playbackError: "",
+      replyAvailable: true,
+    }));
+    retainedAudio.current = [];
+    // Discussion never triggers exports, mail or reminders. Those require the
+    // separate controls on the saved, editable minutes.
+    return `minutes:${outcome.turn.id}`;
+  }
+
+  async function summarizeMeeting(
+    transcript: string,
+    language: SpeechLanguage,
+    sessionId: string,
+  ): Promise<string> {
+    minutesRequest(transcript, language);
+    if (busy.current || selectingRef.current)
+      throw new Error(
+        "Finish the current request before generating minutes. Your notes are still here.",
+      );
+    if (
+      !sessionId ||
+      sessionId === earlierActivity ||
+      sessionId !== selectedSessionRef.current
+    )
+      throw new Error(
+        "The conversation changed. Reopen Meeting minutes in the original session to retry your notes.",
+      );
+    if (Date.now() < Math.max(view.retryAt, view.lookupRetryAt ?? 0))
+      throw new Error(
+        "The request limit was reached. Wait before retrying. Your notes are still here.",
+      );
+    let command = pastedMinutes.current;
+    if (
+      !command ||
+      command.turn.transcript !== transcript ||
+      command.turn.sessionId !== sessionId ||
+      command.language !== language
+    ) {
+      const unfinished = turns
+        .filter(
+          (turn) =>
+            turn.sessionId === sessionId &&
+            turn.transcript === transcript &&
+            turn.minutesInputLanguage === language &&
+            !turn.minutes,
+        )
+        .at(-1);
+      command = {
+        turn: unfinished ?? {
+          id: crypto.randomUUID(),
+          sessionId,
+          transcript,
+          createdAt: new Date().toISOString(),
+          minutesInputLanguage: language,
+        },
+        turnSaved: Boolean(unfinished),
+        language,
+      };
+      pastedMinutes.current = command;
+    }
+    busy.current = true;
+    minutesBusy.current = true;
+    retryTarget.current = "minutes";
+    pending.current = null;
+    setCommandSession(sessionId);
+    const id = ++generation.current;
+    cancelSpeech();
+    try {
+      return await saveMeeting(command, language, id);
+    } catch (error) {
+      if (current(id)) showError(error);
+      throw error;
+    } finally {
+      minutesBusy.current = false;
+      if (current(id)) busy.current = false;
+    }
+  }
+
   async function savePending(id: number) {
     const command = pending.current;
     if (!command)
@@ -332,103 +540,21 @@ export function useReminderFlow() {
       status: searching ? "Searching" : "",
       error: "",
     }));
+    const meeting = meetingCommand(command.turn.transcript);
+    if (meeting) {
+      minutesBusy.current = true;
+      try {
+        await saveMeeting(command, meeting.language, id);
+      } finally {
+        minutesBusy.current = false;
+      }
+      return;
+    }
     if (!command.turnSaved) {
       await storeTurn(command.turn);
       if (mounted.current) setTurns((previous) => [...previous, command.turn]);
       command.turnSaved = true;
       if (!current(id)) return;
-    }
-    const isMeeting =
-      /^\s*(?:(?:please|can you|could you)\s+)?(?:take\s+)?(?:meeting\s+minutes|minutes\s+of\s+(?:the\s+)?meeting|summarize\s+(?:this\s+)?meeting|meeting\s+notes)\b/i.test(
-        command.turn.transcript,
-      );
-    if (isMeeting) {
-      reportExecution({
-        requestId: command.request.command_id,
-        stages: ["PEN"],
-        status: "Summarizing meeting",
-        running: true,
-      });
-      setView((previous) => ({
-        ...previous,
-        turnId: command.turn.id,
-        phase: "processing",
-        status: "Summarizing meeting",
-        error: "",
-      }));
-      const abort = new AbortController();
-      requestAbort.current = abort;
-      let minutesData: unknown;
-      try {
-        minutesData = await postJSON(
-          "/api/minutes",
-          { transcript: command.turn.transcript },
-          abort.signal,
-        );
-      } catch (err) {
-        if (current(id)) showError(err);
-        return;
-      }
-      if (!current(id)) return;
-      setView((previous) => ({ ...previous, phase: "saving", error: "" }));
-      saving.current = true;
-      let outcome: Awaited<ReturnType<typeof commitMinutes>>;
-      try {
-        outcome = await commitMinutes(
-          command.turn,
-          minutesData as MeetingMinutes,
-        );
-      } finally {
-        saving.current = false;
-      }
-      command.turn = outcome.turn;
-      if (!current(id)) return;
-      setTurns((previous) =>
-        previous.map((turn) =>
-          turn.id === command.turn.id ? command.turn : turn,
-        ),
-      );
-      reportExecution({
-        requestId: command.request.command_id,
-        stages: ["PEN"],
-        status: "Minutes saved",
-        running: false,
-      });
-      setView((previous) => ({
-        ...previous,
-        phase: "saved",
-        status: outcome.turn.minutes!.summary,
-        question: "",
-        options: [],
-        reminderOptions: [],
-        draftOptions: [],
-        lookupContext: undefined,
-        deliveryNotice: "",
-        error: "",
-        playbackError: "",
-        replyAvailable: true,
-      }));
-      retainedAudio.current = [];
-      if (
-        outcome.created &&
-        /\b(?:text\s+file|\.txt|download(?:\s+(?:it|a|the))?\s+file)\b/i.test(
-          command.turn.transcript,
-        )
-      ) {
-        const record = minutesRecord(command.turn);
-        if (record) {
-          try {
-            downloadResult(record, "txt");
-          } catch {}
-        }
-      }
-      if (
-        outcome.created &&
-        selectedSessionRef.current === command.turn.sessionId
-      ) {
-        speak(outcome.turn.minutes!.summary, true, "en");
-      }
-      return;
     }
     if (!command.response) {
       const abort = new AbortController();
@@ -473,10 +599,7 @@ export function useReminderFlow() {
         replyAvailable: true,
       }));
       retainedAudio.current = [];
-      if (
-        outcome.created &&
-        requestsLookupTextFile(command.turn.transcript)
-      ) {
+      if (outcome.created && requestsLookupTextFile(command.turn.transcript)) {
         const record = lookupRecord(command.turn);
         if (record) {
           try {
@@ -730,6 +853,7 @@ export function useReminderFlow() {
       .map((record) => ({ ...record }));
     setCommandSession(sessionId);
     busy.current = true;
+    retryTarget.current = "voice";
     orbCore.current?.style.removeProperty("--level");
     captureOwner.current = owner;
     const id = ++generation.current;
@@ -776,20 +900,23 @@ export function useReminderFlow() {
     try {
       const transcript = await session.run();
       if (!current(id)) return;
-      if (/\b(send|deliver)\b/i.test(transcript))
+      if (!meetingCommand(transcript) && /\b(send|deliver)\b/i.test(transcript))
         setView((previous) => ({
           ...previous,
           deliveryNotice:
             "Morning can prepare a draft for you to send in Gmail.",
         }));
       retainedAudio.current = session.audioComplete ? [...session.audio] : [];
-      if (new TextEncoder().encode(transcript).byteLength > 8192)
+      const meeting = meetingCommand(transcript);
+      if (meeting) minutesRequest(transcript, meeting.language);
+      if (!meeting && new TextEncoder().encode(transcript).byteLength > 8192)
         throw new Error(
           "This command is too long. Record a shorter, complete reminder command.",
         );
-      const activeLookup = continuesLookupContext(transcript, lookupContext)
-        ? lookupContext
-        : undefined;
+      const activeLookup =
+        !meeting && continuesLookupContext(transcript, lookupContext)
+          ? lookupContext
+          : undefined;
       if (lookupContext && !activeLookup && latestTurn?.lookupContext) {
         const cleared = { ...latestTurn };
         delete cleared.lookupContext;
@@ -873,6 +1000,20 @@ export function useReminderFlow() {
       await load();
       return;
     }
+    if (retryTarget.current === "minutes") {
+      const command = pastedMinutes.current;
+      if (!command) return;
+      try {
+        await summarizeMeeting(
+          command.turn.transcript,
+          command.language,
+          command.turn.sessionId,
+        );
+      } catch (error) {
+        if (mounted.current) showError(error);
+      }
+      return;
+    }
     if (!pending.current) {
       await record(
         retainedAudio.current.length ? [...retainedAudio.current] : undefined,
@@ -943,6 +1084,26 @@ export function useReminderFlow() {
   }
 
   async function edit(result: WorkspaceResult) {
+    if (result.kind === "minutes") {
+      if (busy.current || selectingRef.current)
+        throw new Error("Finish the current request before saving your edits.");
+      const sessionId = selectedSessionRef.current;
+      busy.current = true;
+      minutesBusy.current = true;
+      saving.current = true;
+      try {
+        const turn = await updateMinutes(result, sessionId);
+        if (mounted.current)
+          setTurns((previous) =>
+            previous.map((item) => (item.id === turn.id ? turn : item)),
+          );
+      } finally {
+        saving.current = false;
+        busy.current = false;
+        minutesBusy.current = false;
+      }
+      return;
+    }
     const updated = await updateResult(result);
     if (mounted.current)
       setRecords((previous) =>
@@ -983,7 +1144,9 @@ export function useReminderFlow() {
     const latest = turns
       .filter((turn) => turn.sessionId === selectedSession)
       .at(-1);
-    const text = latest?.lookup?.speech ?? latest?.reply;
+    const text = latest?.minutes
+      ? minutesSpeech(latest.minutes.summary, latest.replyLanguage ?? "en")
+      : (latest?.lookup?.speech ?? latest?.reply);
     const language =
       latest?.lookup?.reply_language ??
       latest?.replyLanguage ??
@@ -1147,7 +1310,13 @@ export function useReminderFlow() {
     canSelect:
       Boolean(selectedSession) &&
       !selecting &&
+      !minutesBusy.current &&
       !["requesting", "connecting", "listening"].includes(view.phase),
+    canSummarize:
+      !active &&
+      !selecting &&
+      Boolean(selectedSession) &&
+      selectedSession !== earlierActivity,
     recorderUnavailable:
       selecting ||
       selectedSession === earlierActivity ||
@@ -1175,50 +1344,50 @@ export function useReminderFlow() {
     startHold,
     releaseHold,
     cancelHold,
-    summarizeMeeting: async (meetingTranscript: string): Promise<string> => {
-      const transcript = meetingTranscript.trim();
-      if (!transcript) {
-        throw new Error("Provide meeting notes or a transcript to summarize.");
-      }
-      const sessionId = selectedSessionRef.current;
-      if (!sessionId || sessionId === earlierActivity) {
-        throw new Error("Please select an active session to save minutes.");
-      }
-      const turn: Turn = {
-        id: crypto.randomUUID(),
-        sessionId,
-        transcript,
-        createdAt: new Date().toISOString(),
-      };
-      await storeTurn(turn);
-      if (mounted.current) setTurns((previous) => [...previous, turn]);
-      const abort = new AbortController();
-      const data = await postJSON(
-        "/api/minutes",
-        { transcript },
-        abort.signal,
-      );
-      const outcome = await commitMinutes(turn, data as MeetingMinutes);
-      if (mounted.current) {
-        setTurns((previous) =>
-          previous.map((item) => (item.id === turn.id ? outcome.turn : item)),
-        );
-      }
-      return `minutes:${turn.id}`;
-    },
+    minutesDraft: sessionTurns
+      .filter((turn) => turn.minutesInputLanguage && !turn.minutes)
+      .at(-1),
+    summarizeMeeting,
     createReminder: async (
+      minutesId: string,
+      actionItemId: string,
       title: string,
       dueAt: string,
-    ): Promise<StoredReminder> => {
+    ): Promise<void> => {
+      if (busy.current || selectingRef.current)
+        throw new Error(
+          "Finish the current request before creating a reminder.",
+        );
       const sessionId = selectedSessionRef.current;
-      if (!sessionId || sessionId === earlierActivity) {
-        throw new Error("Please select an active session to save a reminder.");
+      if (!sessionId || sessionId === earlierActivity)
+        throw new Error("Select an active conversation first.");
+      busy.current = true;
+      minutesBusy.current = true;
+      saving.current = true;
+      try {
+        const outcome = await createMinutesReminder(
+          minutesId,
+          actionItemId,
+          title,
+          dueAt,
+          sessionId,
+        );
+        if (mounted.current) {
+          setTurns((previous) =>
+            previous.map((turn) =>
+              turn.id === outcome.turn.id ? outcome.turn : turn,
+            ),
+          );
+          setRecords((previous) => [
+            outcome.reminder,
+            ...previous.filter((record) => record.id !== outcome.reminder.id),
+          ]);
+        }
+      } finally {
+        saving.current = false;
+        busy.current = false;
+        minutesBusy.current = false;
       }
-      const reminder = await addManualReminder(title, dueAt, sessionId);
-      if (mounted.current) {
-        setRecords((previous) => [reminder, ...previous]);
-      }
-      return reminder;
     },
   };
 }
