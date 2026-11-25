@@ -140,7 +140,12 @@ export function App() {
       (sessionTurnCounts.get(turn.sessionId) ?? 0) + 1,
     );
   }
-  const sessions = live.sessions
+  const sessions: {
+    id: string;
+    label: string;
+    meta?: string;
+    excerpt?: string;
+  }[] = live.sessions
     .map((session, index) => {
       const count = sessionTurnCounts.get(session.id) ?? 0;
       const date = new Intl.DateTimeFormat("en", {
