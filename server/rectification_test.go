@@ -44,6 +44,27 @@ func TestGroqRateLimitFallsBackAndCoolsDownModel(t *testing.T) {
 	}
 }
 
+func TestGroqModel404FallsBackToNextModel(t *testing.T) {
+	var seenModels []string
+	handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
+		var body struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		seenModels = append(seenModels, body.Model)
+		if body.Model == defaultGroqModels[0] {
+			return providerResponse(404, `{"error":{"code":"model_not_found"}}`), nil
+		}
+		return providerResponse(200, fixture(t, "groq-reminder.json")), nil
+	})
+	w := requestAPI(handler, "/api/commands", fixtureCommand)
+	if w.Code != 200 || len(seenModels) != 2 || seenModels[0] != defaultGroqModels[0] || seenModels[1] != defaultGroqModels[1] {
+		t.Fatalf("expected 404 fallback to model 1, got %d models=%v", w.Code, seenModels)
+	}
+}
+
 func TestRecentTurnsAndForgivingContactResolution(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

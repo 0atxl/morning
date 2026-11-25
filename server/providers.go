@@ -20,25 +20,25 @@ import (
 const (
 	deepgramGrantURL = "https://api.deepgram.com/v1/auth/grant"
 	groqCommandURL   = "https://api.groq.com/openai/v1/chat/completions"
-	groqModel        = "llama-3.3-70b-versatile"
+	groqModel        = "openai/gpt-oss-20b"
 	tokenTTL         = 30
 	maxProviderBody  = 64 << 10
 )
 
-// Ordered Groq fallback pool. Each model has its own independent TPM/RPM quota
-// bucket on Groq, so falling back transparently prevents 429 dead-ends.
+// Ordered Groq fallback pool. Each model has its own independent 8,000 TPM
+// quota bucket on Groq (24,000 TPM combined), preventing 429 dead-ends.
 var defaultGroqModels = []string{
-	"llama-3.3-70b-versatile",
-	"openai/gpt-oss-120b",
 	"openai/gpt-oss-20b",
-	"llama-3.1-8b-instant",
+	"openai/gpt-oss-120b",
+	"qwen/qwen3.8-27b",
 }
 
 var (
-	errProviderUnavailable   = errors.New("provider unavailable")
-	errProviderTimeout       = errors.New("provider timeout")
-	errProviderRateLimited   = errors.New("provider rate limit")
-	errInvalidProviderOutput = errors.New("invalid provider output")
+	errProviderUnavailable      = errors.New("provider unavailable")
+	errProviderModelUnavailable = errors.New("provider model unavailable")
+	errProviderTimeout          = errors.New("provider timeout")
+	errProviderRateLimited      = errors.New("provider rate limit")
+	errInvalidProviderOutput    = errors.New("invalid provider output")
 )
 
 type modelCooldowns struct {
@@ -135,6 +135,7 @@ func (p *providers) postGroq(ctx context.Context, baseBody map[string]any, dst a
 	}
 
 	tried := 0
+	lastErr := errProviderUnavailable
 	for _, model := range models {
 		if rem := p.cooldowns.remaining(model, now); rem > 0 {
 			recordWait(rem)
@@ -147,7 +148,11 @@ func (p *providers) postGroq(ctx context.Context, baseBody map[string]any, dst a
 		}
 		reqBody["model"] = model
 		if !modelSupportsStrictSchema(model) {
-			delete(reqBody, "reasoning_effort")
+			if strings.HasPrefix(model, "qwen/") {
+				reqBody["reasoning_effort"] = "none"
+			} else {
+				delete(reqBody, "reasoning_effort")
+			}
 			if rf, ok := reqBody["response_format"].(map[string]any); ok && rf["type"] == "json_schema" {
 				reqBody["response_format"] = map[string]any{"type": "json_object"}
 			}
@@ -163,12 +168,18 @@ func (p *providers) postGroq(ctx context.Context, baseBody map[string]any, dst a
 			log.Printf("groq model rate-limited, falling back: model=%s retry_after=%ds", model, wait)
 			continue
 		}
+		if errors.Is(err, errProviderModelUnavailable) {
+			p.cooldowns.mark(model, 600, time.Now())
+			lastErr = errProviderUnavailable
+			log.Printf("groq model unavailable (404), falling back: model=%s", model)
+			continue
+		}
 		return model, err
 	}
-	if tried == 0 || minWait > 0 {
+	if minWait > 0 {
 		return "", &providerRateLimitError{retryAfter: minWait}
 	}
-	return "", errProviderUnavailable
+	return "", lastErr
 }
 
 type tokenGrant struct {
@@ -481,6 +492,9 @@ func (p *providers) post(ctx context.Context, endpoint, authorization string, bo
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusTooManyRequests {
 		return &providerRateLimitError{retryAfter: providerRetrySeconds(response.Header.Get("Retry-After"), time.Now())}
+	}
+	if response.StatusCode == http.StatusNotFound {
+		return errProviderModelUnavailable
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		// Provider bodies may contain credentials or transcript fragments. Never

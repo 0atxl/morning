@@ -39,7 +39,7 @@ func TestLookupPlaceChoiceFetchesFactsForOnlyTheSelectedProviderRecord(t *testin
 							Type string `json:"type"`
 						} `json:"response_format"`
 					}
-					if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || payload.ResponseFormat.Type != "json_object" || !strings.Contains(payload.Messages[0].Content, "candidate_index") {
+					if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || (payload.ResponseFormat.Type != "json_schema" && payload.ResponseFormat.Type != "json_object") || !strings.Contains(payload.Messages[0].Content, "candidate_index") {
 						t.Fatal("selection must use only the candidate-index prompt and JSON output")
 					}
 					var data struct {

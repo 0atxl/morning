@@ -27,7 +27,7 @@ func TestLookupPlaceFullHindiWeatherQuestionResumesOriginalLookup(t *testing.T) 
 					Type string `json:"type"`
 				} `json:"response_format"`
 			}
-			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || payload.ResponseFormat.Type != "json_object" || !strings.Contains(payload.Messages[0].Content, "Extract a location") {
+			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || (payload.ResponseFormat.Type != "json_schema" && payload.ResponseFormat.Type != "json_object") || !strings.Contains(payload.Messages[0].Content, "Extract a location") {
 				t.Fatal("a follow-up must use only the place-extraction prompt and JSON output")
 			}
 			var data map[string]string
