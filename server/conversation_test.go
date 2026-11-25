@@ -9,26 +9,44 @@ import (
 )
 
 func TestConversationalReplyUsesGroqAndReturnsNoSavedActions(t *testing.T) {
-	for _, transcript := range []string{"Hi, hello!", "Could you tell me what you can do for me?"} {
+	// Greetings, capabilities, and local time use the 0-token local smalltalk path.
+	for _, transcript := range []string{"Hi, hello!", "Could you tell me what you can do for me?", "What time is it?", "नमस्ते"} {
 		calls := 0
-		handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
+		handler := fixtureAPI(t, func(*http.Request) (*http.Response, error) {
 			calls++
-			var payload struct{ Messages []struct{ Content string } }
-			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || !strings.Contains(payload.Messages[1].Content, transcript) {
-				t.Fatal("the complete turn must reach Groq as data")
-			}
-			model, _ := json.Marshal(modelInterpretation{Actions: []action{{Type: "reply", Text: "I can help you save a reminder or prepare an editable email draft."}}})
-			body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]string{"content": string(model)}}}})
-			return providerResponse(200, string(body)), nil
+			t.Fatalf("smalltalk %q should not call Groq", transcript)
+			return nil, nil
 		})
 		var request commandRequest
 		_ = json.Unmarshal([]byte(fixtureCommand), &request)
 		request.Transcript = transcript
 		status, body := requestCommand(t, handler, request)
 		var reply commandResponse
-		if json.Unmarshal([]byte(body), &reply) != nil || status != 200 || calls != 1 || reply.Reply == "" || len(reply.Actions) != 0 || reply.Clarification != nil {
-			t.Fatalf("expected a model reply without actions: %d %s", status, body)
+		if json.Unmarshal([]byte(body), &reply) != nil || status != 200 || calls != 0 || reply.Reply == "" || len(reply.Actions) != 0 || reply.Clarification != nil {
+			t.Fatalf("expected instant smalltalk reply without actions: %d %s", status, body)
 		}
+	}
+
+	// Open-ended conversational prompts still use Groq and return a reply without saved actions.
+	transcript := "Give me three short tips for staying focused today."
+	calls := 0
+	handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		var payload struct{ Messages []struct{ Content string } }
+		if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || !strings.Contains(payload.Messages[1].Content, transcript) {
+			t.Fatal("the complete turn must reach Groq as data")
+		}
+		model, _ := json.Marshal(modelInterpretation{Actions: []action{{Type: "reply", Text: "Pick one priority, silence notifications for 25 minutes, and take a quick break."}}})
+		body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]string{"content": string(model)}}}})
+		return providerResponse(200, string(body)), nil
+	})
+	var request commandRequest
+	_ = json.Unmarshal([]byte(fixtureCommand), &request)
+	request.Transcript = transcript
+	status, body := requestCommand(t, handler, request)
+	var reply commandResponse
+	if json.Unmarshal([]byte(body), &reply) != nil || status != 200 || calls != 1 || reply.Reply == "" || len(reply.Actions) != 0 || reply.Clarification != nil {
+		t.Fatalf("expected a model reply without actions: %d %s", status, body)
 	}
 }
 
@@ -39,7 +57,7 @@ func TestReplyCannotAccompanyOrSmuggleSavedActions(t *testing.T) {
 	for _, actions := range [][]action{
 		{{Type: "reply", Text: "Hello", DueAt: "2026-11-03T09:10:00+05:30"}},
 		{{Type: "reply", Text: "Hello"}, {Type: "create_reminder", Title: "Water", DueAt: "2026-11-03T09:10:00+05:30"}},
-		{{Type: "reply", Text: strings.Repeat("x", 241)}},
+		{{Type: "reply", Text: strings.Repeat("x", maxReplyChars+1)}},
 	} {
 		result := interpretation{Actions: actions}
 		if validateInterpretation(&result, now, location) == nil {

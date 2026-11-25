@@ -41,8 +41,10 @@ func hindiQuestion(question string) string {
 
 var hindiQuestions = map[string]string{
 	"Which reminder should I move?":                          "कौन सा रिमाइंडर बदलना है?",
+	"Which reminder should I delete?":                        "कौन सा रिमाइंडर हटाना है?",
 	"What time should I move the reminder to?":               "रिमाइंडर का समय क्या रखना है?",
 	"Which draft should I update?":                           "कौन सा ईमेल ड्राफ्ट बदलना है?",
+	"Which draft should I delete?":                           "कौन सा ईमेल ड्राफ्ट हटाना है?",
 	"When should the event start?":                           "इवेंट कब शुरू होना चाहिए?",
 	"How long should the event last?":                        "इवेंट कितनी देर का होना चाहिए?",
 	"Which city or landmark?":                                "कौन सा शहर या जगह?",

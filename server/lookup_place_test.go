@@ -24,15 +24,11 @@ func TestLookupPlaceFullHindiWeatherQuestionResumesOriginalLookup(t *testing.T) 
 			var payload struct {
 				Messages       []struct{ Role, Content string }
 				ResponseFormat struct {
-					JSONSchema struct {
-						Name   string
-						Strict bool
-						Schema struct{ Properties map[string]json.RawMessage }
-					} `json:"json_schema"`
+					Type string `json:"type"`
 				} `json:"response_format"`
 			}
-			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || payload.ResponseFormat.JSONSchema.Name != "morning_lookup_place" || !payload.ResponseFormat.JSONSchema.Strict || len(payload.ResponseFormat.JSONSchema.Schema.Properties) != 1 {
-				t.Fatal("a follow-up must use only the place-extraction schema")
+			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || payload.ResponseFormat.Type != "json_object" || !strings.Contains(payload.Messages[0].Content, "Extract a location") {
+				t.Fatal("a follow-up must use only the place-extraction prompt and JSON output")
 			}
 			var data map[string]string
 			if json.Unmarshal([]byte(payload.Messages[1].Content), &data) != nil || len(data) != 2 || data["reply"] != spoken || data["known_city"] != "" {
@@ -114,14 +110,14 @@ func TestLookupPlaceEmptyRepliesAreRateLimitedWithoutRetrieval(t *testing.T) {
 	request := mustLookupRequest(t)
 	request.Transcript = "Send Priya an email"
 	request.LookupContext = &lookupContext{Query: lookupQuery{Kind: "weather"}, ReplyLanguage: "hi"}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 21; i++ {
 		status, body := requestCommand(t, handler, request)
-		if i < 4 {
+		if i < 20 {
 			var result commandResponse
 			if json.Unmarshal([]byte(body), &result) != nil || status != 200 || result.LookupContext == nil || result.LookupContext.Query.Kind != "weather" || result.LookupContext.Query.Place != "" || result.Lookup != nil || len(result.Actions) != 0 {
 				t.Fatalf("unrelated reply changed the original lookup: %d %s", status, body)
 			}
-		} else if status != 429 || !strings.Contains(body, "lookup_rate_limited") || calls != 4 {
+		} else if status != 429 || !strings.Contains(body, "lookup_rate_limited") || calls != 20 {
 			t.Fatalf("place extraction is not rate limited: %d %s", status, body)
 		}
 	}

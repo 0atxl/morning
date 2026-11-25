@@ -131,21 +131,35 @@ export function App() {
   }, [live.execution.requestId]);
 
   const sessionNames = new Map<string, string>();
+  const sessionTurnCounts = new Map<string, number>();
   for (const turn of live.turns) {
     if (!sessionNames.has(turn.sessionId))
       sessionNames.set(turn.sessionId, turn.transcript);
+    sessionTurnCounts.set(
+      turn.sessionId,
+      (sessionTurnCounts.get(turn.sessionId) ?? 0) + 1,
+    );
   }
   const sessions = live.sessions
-    .map((session, index) => ({
-      id: session.id,
-      label: `Session ${index + 1}`,
-      excerpt: sessionNames.get(session.id),
-    }))
+    .map((session, index) => {
+      const count = sessionTurnCounts.get(session.id) ?? 0;
+      const date = new Intl.DateTimeFormat("en", {
+        month: "short",
+        day: "numeric",
+      }).format(new Date(session.createdAt));
+      return {
+        id: session.id,
+        label: `Session ${index + 1}`,
+        meta: count > 0 ? `${date} · ${count} ${count === 1 ? "turn" : "turns"}` : date,
+        excerpt: sessionNames.get(session.id),
+      };
+    })
     .reverse();
   if (live.hasLegacy)
     sessions.push({
       id: earlierActivity,
       label: "Earlier activity",
+      meta: undefined,
       excerpt: undefined,
     });
   const sessionLabel = sessions.find(
@@ -232,7 +246,12 @@ export function App() {
                           title={session.excerpt ?? session.label}
                           onClick={() => void live.selectSession(session.id)}
                         >
-                          <span>{session.label}</span>
+                          <span className="history-title-row">
+                            <span>{session.label}</span>
+                            {session.meta && (
+                              <span className="history-meta">{session.meta}</span>
+                            )}
+                          </span>
                           {session.excerpt && <small>{session.excerpt}</small>}
                         </Button>
                         {session.id !== earlierActivity && (
@@ -272,7 +291,10 @@ export function App() {
               view={view}
               disabled={live.recorderUnavailable}
               archive={selectedSession === earlierActivity}
+              autoStop={live.autoStop}
+              onToggleAutoStop={live.setAutoStop}
               onToggle={toggleCapture}
+              onSubmitText={(text) => void live.submitText(text)}
               onRetry={() => void live.retry()}
               onCancel={live.cancel}
               onRetrySpeech={live.retrySpeech}
@@ -316,7 +338,7 @@ export function App() {
                   </div>
                 );
               })}
-              {!live.results.length && (
+              {!live.results.length && !live.sessionTurns.length && (
                 <p className="results-empty">
                   No saved results in this session.
                 </p>

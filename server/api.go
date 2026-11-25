@@ -15,18 +15,21 @@ import (
 const websocketURL = "wss://api.deepgram.com/v1/listen?model=nova-3&language=multi&language_hint=en&language_hint=hi&interim_results=true&smart_format=true"
 
 type commandRequest struct {
-	CommandID          string               `json:"command_id"`
-	Transcript         string               `json:"transcript"`
-	Now                string               `json:"now"`
-	Timezone           string               `json:"timezone"`
-	Contacts           []contact            `json:"contacts,omitempty"`
-	SelectedContactID  *string              `json:"selected_contact_id,omitempty"`
-	ReminderContext    *reminderContext     `json:"reminder_context,omitempty"`
-	SelectedReminderID *string              `json:"selected_reminder_id,omitempty"`
-	DraftContext       *draftContext        `json:"draft_context,omitempty"`
-	SelectedDraftID    *string              `json:"selected_draft_id,omitempty"`
-	LookupContext      *lookupContext       `json:"lookup_context,omitempty"`
-	PreviousTurn       *previousTurnContext `json:"previous_turn,omitempty"`
+	CommandID          string                `json:"command_id"`
+	Transcript         string                `json:"transcript"`
+	Now                string                `json:"now"`
+	Timezone           string                `json:"timezone"`
+	Contacts           []contact             `json:"contacts,omitempty"`
+	SelectedContactID  *string               `json:"selected_contact_id,omitempty"`
+	ReminderContext    *reminderContext      `json:"reminder_context,omitempty"`
+	RemindersContext   []reminderContextItem `json:"reminders_context,omitempty"`
+	SelectedReminderID *string               `json:"selected_reminder_id,omitempty"`
+	DraftContext       *draftContext         `json:"draft_context,omitempty"`
+	DraftsContext      []draftContext        `json:"drafts_context,omitempty"`
+	SelectedDraftID    *string               `json:"selected_draft_id,omitempty"`
+	LookupContext      *lookupContext        `json:"lookup_context,omitempty"`
+	PreviousTurn       *previousTurnContext  `json:"previous_turn,omitempty"`
+	RecentTurns        []recentTurnContext   `json:"recent_turns,omitempty"`
 }
 
 type previousTurnContext struct {
@@ -54,6 +57,15 @@ func (p *previousTurnContext) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type recentTurnContext struct {
+	Transcript   string `json:"transcript,omitempty"`
+	Reply        string `json:"reply,omitempty"`
+	Kind         string `json:"kind,omitempty"`
+	Topic        string `json:"topic,omitempty"`
+	Answer       string `json:"answer,omitempty"`
+	PriorSession bool   `json:"prior_session,omitempty"`
+}
+
 type draftContext struct {
 	ID        string `json:"id"`
 	Subject   string `json:"subject"`
@@ -63,8 +75,17 @@ type draftContext struct {
 }
 
 type reminderContext struct {
-	ID    string    `json:"id"`
-	DueAt time.Time `json:"due_at"`
+	ID     string    `json:"id"`
+	Title  string    `json:"title,omitempty"`
+	DueAt  time.Time `json:"due_at"`
+	Repeat string    `json:"repeat,omitempty"`
+}
+
+type reminderContextItem struct {
+	ID     string    `json:"id"`
+	Title  string    `json:"title,omitempty"`
+	DueAt  time.Time `json:"due_at"`
+	Repeat string    `json:"repeat,omitempty"`
 }
 
 type action struct {
@@ -133,6 +154,9 @@ func newAPI(p *providers, clock func() time.Time) http.Handler {
 }
 
 func newAPIWithMailbox(p *providers, clock func() time.Time, mailbox *reminderMailbox) http.Handler {
+	if p.cooldowns == nil {
+		p.cooldowns = newModelCooldowns()
+	}
 	tracer := newLangsmithTracer(p.client)
 	if p.tracer == nil {
 		p.tracer = tracer
@@ -218,12 +242,28 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		if !validCommandID(id) {
 			id = ""
 		}
+		cmdErr = err
 		writeError(w, http.StatusBadRequest, id, "invalid_request", err.Error(), false)
 		return
 	}
 	if request.LookupContext != nil {
 		a.answerLookup(w, r, request, request.LookupContext.Query)
 		return
+	}
+	language := replyLanguage(request.Transcript)
+	// Fast 0-token local handler for greetings, thanks, capabilities, and local time/date.
+	if request.SelectedContactID == nil && request.SelectedReminderID == nil && request.SelectedDraftID == nil {
+		if reply, ok := smallTalk(request.Transcript, now, location, language); ok {
+			resp := commandResponse{
+				CommandID:      request.CommandID,
+				interpretation: interpretation{Actions: []action{}},
+				Reply:          reply,
+				ReplyLanguage:  language,
+			}
+			cmdOutput = resp
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
 	}
 	var model modelInterpretation
 	var result interpretation
@@ -243,11 +283,13 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		if errors.Is(err, errInvalidSelection) {
+			cmdErr = err
 			writeError(w, http.StatusBadRequest, request.CommandID, "invalid_request", err.Error(), false)
 			return
 		}
 		if !invalid {
-			// Rate limits, outages and timeouts never cause a second provider call.
+			// Rate limits, outages and timeouts never cause a second provider repair call.
+			cmdErr = err
 			writeProviderError(w, request.CommandID, "command", err)
 			return
 		}
@@ -256,30 +298,35 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 		feedback = stage + ": " + err.Error()
 		log.Printf("command output rejected: command_id=%s stage=%s reason=%s attempt=%d", request.CommandID, stage, err.Error(), attempt+1)
 		if ctx.Err() != nil {
+			cmdErr = errProviderTimeout
 			writeProviderError(w, request.CommandID, "command", errProviderTimeout)
 			return
 		}
 		if attempt == 0 {
 			continue
 		}
+		cmdErr = errInvalidProviderOutput
 		writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 		return
 	}
 	if model.Lookup != nil {
-		model.Lookup.ReplyLanguage = replyLanguage(request.Transcript)
+		model.Lookup.ReplyLanguage = language
 		a.answerLookup(w, r, request, *model.Lookup)
 		return
 	}
 	if len(result.Actions) == 1 && result.Actions[0].Type == "reply" {
-		writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Reply: result.Actions[0].Text, ReplyLanguage: replyLanguage(request.Transcript)})
+		resp := commandResponse{CommandID: request.CommandID, interpretation: interpretation{Actions: []action{}}, Reply: result.Actions[0].Text, ReplyLanguage: language}
+		cmdOutput = resp
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
-	language := replyLanguage(request.Transcript)
 	if language == "hi" && result.Clarification != nil {
 		question := hindiQuestion(*result.Clarification)
 		result.Clarification = &question
 	}
-	writeJSON(w, http.StatusOK, commandResponse{CommandID: request.CommandID, interpretation: result, ReplyLanguage: language})
+	resp := commandResponse{CommandID: request.CommandID, interpretation: result, ReplyLanguage: language}
+	cmdOutput = resp
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // Every generation attempt passes the same validation before lookup execution
@@ -287,7 +334,7 @@ func (a *api) command(w http.ResponseWriter, r *http.Request) {
 func validateCommandModel(model modelInterpretation, request commandRequest, now time.Time, location *time.Location) (interpretation, string, error) {
 	result := interpretation{Actions: model.Actions, Clarification: model.Clarification}
 	if model.Lookup != nil {
-		if model.Actions == nil || len(model.Actions) != 0 || model.Clarification != nil || model.RecipientName != nil ||
+		if len(model.Actions) != 0 || model.Clarification != nil || (model.RecipientName != nil && *model.RecipientName != "") ||
 			request.SelectedContactID != nil || request.SelectedReminderID != nil || request.SelectedDraftID != nil {
 			return result, "lookup_action_boundary", errInvalidProviderOutput
 		}
@@ -304,20 +351,21 @@ func validateCommandModel(model modelInterpretation, request commandRequest, now
 	if err != nil {
 		return result, "reminder_correction", err
 	}
+	result, err = resolveDraftAction(result, request)
+	if err != nil {
+		return result, "draft_resolution", err
+	}
 	result, err = resolveContact(result, model.RecipientName, request)
 	if err != nil {
 		return result, "contact_resolution", err
 	}
-	if len(result.Actions) == 1 && result.Actions[0].Type == "update_draft" {
-		if request.DraftContext == nil {
-			question := "Which draft should I update?"
-			result = interpretation{Actions: []action{}, Clarification: &question}
-		} else {
-			result.Actions[0].DraftID = request.DraftContext.ID
+	if len(result.Actions) > 0 {
+		if request.SelectedReminderID != nil && result.Actions[0].Type != "reschedule_reminder" && result.Actions[0].Type != "delete_reminder" {
+			return result, "selected_item_action", errInvalidProviderOutput
 		}
-	}
-	if len(result.Actions) > 0 && ((request.SelectedReminderID != nil && result.Actions[0].Type != "reschedule_reminder") || (request.SelectedDraftID != nil && result.Actions[0].Type != "update_draft")) {
-		return result, "selected_item_action", errInvalidProviderOutput
+		if request.SelectedDraftID != nil && result.Actions[0].Type != "update_draft" && result.Actions[0].Type != "delete_draft" {
+			return result, "selected_item_action", errInvalidProviderOutput
+		}
 	}
 	if err := validateCommandCompleteness(result, request.Transcript); err != nil {
 		return result, "command_completeness", err

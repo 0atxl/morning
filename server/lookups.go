@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -95,9 +96,9 @@ func newLookupService(p *providers, clock func() time.Time) *lookupService {
 	}
 	return &lookupService{
 		client: client, tavilyKey: strings.TrimSpace(os.Getenv("TAVILY_API_KEY")),
-		groq: &providers{client: &client, groqKey: p.groqKey}, clock: clock,
-		searchLimiter: newRateLimiter(4, 40), placeLimiter: newRateLimiter(4, 40),
-		placeReplies: newRateLimiter(4, 40),
+		groq: &providers{client: &client, groqKey: p.groqKey, models: p.models, cooldowns: p.cooldowns}, clock: clock,
+		searchLimiter: newRateLimiter(20, 200), placeLimiter: newRateLimiter(20, 200),
+		placeReplies: newRateLimiter(20, 200),
 	}
 }
 
@@ -215,6 +216,12 @@ func (s *lookupService) lookup(ctx context.Context, q lookupQuery, visitor, time
 		outcome, err = s.placeLookup(ctx, q, now)
 	} else if q.Kind == "wiki" {
 		outcome, err = s.wikiLookup(ctx, q, now)
+		if err == nil && outcome.Result != nil && outcome.Result.Status == "empty" && len(outcome.Result.Sources) == 0 && s.tavilyKey != "" {
+			webQuery := lookupQuery{Kind: "web", Terms: q.Terms, ReplyLanguage: q.ReplyLanguage}
+			if webOutcome, webErr := s.searchLookup(ctx, webQuery, now, location); webErr == nil && webOutcome.Result != nil && webOutcome.Result.Status == "answered" {
+				outcome = webOutcome
+			}
+		}
 	} else {
 		outcome, err = s.searchLookup(ctx, q, now, location)
 	}
@@ -274,9 +281,11 @@ func (a *api) answerLookup(w http.ResponseWriter, r *http.Request, request comma
 	if err != nil {
 		failure, ok := publicLookupError(err).(*lookupError)
 		if !ok {
+			log.Printf("lookup failed: command_id=%s kind=%s code=invalid_output", request.CommandID, query.Kind)
 			writeProviderError(w, request.CommandID, "command", errInvalidProviderOutput)
 			return
 		}
+		log.Printf("lookup failed: command_id=%s kind=%s code=%s", request.CommandID, query.Kind, failure.Code)
 		status := http.StatusBadGateway
 		switch failure.Code {
 		case "lookup_timeout":

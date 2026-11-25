@@ -86,28 +86,27 @@ func TestLookupCommandSpokenPlaceFinishesOriginalSearchWithoutInterpretingAnActi
 	handler := fixtureAPI(t, func(r *http.Request) (*http.Response, error) {
 		if r.URL.String() == groqCommandURL {
 			var body struct {
-				ResponseFormat struct {
-					JSONSchema struct {
-						Name string `json:"name"`
-					} `json:"json_schema"`
-				} `json:"response_format"`
+				Messages []struct {
+					Content string `json:"content"`
+				} `json:"messages"`
 			}
-			if json.NewDecoder(r.Body).Decode(&body) != nil {
+			if json.NewDecoder(r.Body).Decode(&body) != nil || len(body.Messages) < 1 {
 				t.Fatal("invalid model request")
 			}
-			if body.ResponseFormat.JSONSchema.Name == "morning_command" {
-				intents++
-				if intents > 1 {
-					t.Fatal("a spoken place must not run command interpretation again")
-				}
-				return lookupIntentResponse(modelInterpretation{Actions: []action{}, Lookup: &lookupQuery{Kind: "hotels"}}), nil
-			}
-			if body.ResponseFormat.JSONSchema.Name == "morning_lookup_place" {
+			sys := body.Messages[0].Content
+			if strings.Contains(sys, "Extract a location") {
 				return lookupPlaceResponse(`{"place":"Jaipur railway station"}`), nil
 			}
-			return evidenceResponse("", evidenceItem(0, "Hotel Station Garden", "Hotel Station Garden is near Jaipur railway station.")), nil
+			if strings.Contains(sys, "Select relevant evidence") {
+				return evidenceResponse("", evidenceItem(0, "Hotel Station Garden", "Hotel Station Garden is near Jaipur railway station.")), nil
+			}
+			intents++
+			if intents > 1 {
+				t.Fatal("a spoken place must not run command interpretation again")
+			}
+			return lookupIntentResponse(modelInterpretation{Actions: []action{}, Lookup: &lookupQuery{Kind: "hotels"}}), nil
 		}
-		return fixtureMCP(t, r, fixture(t, "tavily-hotels.json"), func(args map[string]any) {
+		return fixtureTavilyREST(t, r, fixture(t, "tavily-hotels.json"), func(args map[string]any) {
 			if args["query"] != "Hotels near Jaipur railway station" {
 				t.Fatalf("original search lost: %v", args)
 			}
@@ -235,12 +234,10 @@ func TestLookupCommandBriefingCityContinuationUsesReadOnlyEnvelope(t *testing.T)
 		switch r.URL.Host {
 		case "api.groq.com":
 			var payload struct {
-				ResponseFormat struct {
-					JSONSchema struct{ Name string } `json:"json_schema"`
-				} `json:"response_format"`
+				Messages []struct{ Content string } `json:"messages"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&payload)
-			if payload.ResponseFormat.JSONSchema.Name == "morning_lookup_place" {
+			if len(payload.Messages) > 0 && strings.Contains(payload.Messages[0].Content, "Extract a location") {
 				return lookupPlaceResponse(`{"place":"Pune, Maharashtra, India"}`), nil
 			}
 			intentCalls++

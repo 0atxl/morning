@@ -42,6 +42,80 @@ export type Turn = {
 };
 export const earlierActivity = "earlier-activity";
 
+function utf8Clip(value: string, maxBytes: number): string {
+  const bytes = new TextEncoder().encode(value);
+  let end = Math.min(bytes.length, maxBytes);
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return new TextDecoder().decode(bytes.subarray(0, end)).trim();
+}
+
+function isCompletedMemoryTurn(turn: Turn): boolean {
+  return (
+    !turn.lookupContext &&
+    Boolean(
+      turn.lookup?.status === "answered" ||
+        turn.minutes ||
+        (!turn.lookup && turn.reply),
+    )
+  );
+}
+
+// Rolling multi-turn conversation memory ordered oldest -> newest. When the
+// active session has few turns, backfills recent completed turns from earlier
+// sessions (tagged prior_session=true) so follow-ups work across voice sessions.
+export function recentTurnsContext(
+  turns: readonly Turn[],
+  sessionId: string,
+  limit = 8,
+): CommandRequest["recent_turns"] {
+  if (!sessionId || sessionId === earlierActivity) return undefined;
+  const completed = turns.filter(isCompletedMemoryTurn);
+  const current = completed
+    .filter((turn) => turn.sessionId === sessionId)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(-limit);
+  let prior: Turn[] = [];
+  if (current.length < 4 && limit > current.length) {
+    const backfillCap = Math.min(4, limit - current.length);
+    prior = completed
+      .filter(
+        (turn) =>
+          turn.sessionId !== sessionId && turn.sessionId !== earlierActivity,
+      )
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+      .slice(-backfillCap);
+  }
+  const combined = [
+    ...prior.map((turn) => ({ turn, priorSession: true })),
+    ...current.map((turn) => ({ turn, priorSession: false })),
+  ];
+  if (!combined.length) return undefined;
+  const out = combined
+    .map(({ turn, priorSession }) => {
+      const transcript = utf8Clip(turn.transcript, 800);
+      const topic = utf8Clip(
+        turn.lookup?.query ?? (turn.minutes ? "Meeting notes" : ""),
+        200,
+      );
+      const answer = utf8Clip(
+        turn.lookup?.answer ?? turn.minutes?.summary ?? "",
+        1000,
+      );
+      const reply = utf8Clip(turn.reply ?? "", 600);
+      const kind = turn.lookup?.kind ?? (turn.minutes ? "minutes" : "");
+      return {
+        ...(transcript ? { transcript } : {}),
+        ...(kind ? { kind } : {}),
+        ...(topic ? { topic } : {}),
+        ...(answer ? { answer } : {}),
+        ...(reply && reply !== answer ? { reply } : {}),
+        ...(priorSession ? { prior_session: true } : {}),
+      };
+    })
+    .filter((item) => Object.keys(item).length > 0);
+  return out.length ? out : undefined;
+}
+
 // Only completed read-only turns supply memory. Saved actions use their own
 // explicit contexts and receipts; an old command must never become a new action.
 export function previousTurnContext(
@@ -71,10 +145,7 @@ export function previousTurnContext(
   const limits = { transcript: 8192, topic: 300, answer: 4000, reply: 1000 };
   const context: NonNullable<CommandRequest["previous_turn"]> = {};
   for (const key of ["transcript", "topic", "answer", "reply"] as const) {
-    const bytes = new TextEncoder().encode(values[key]);
-    let end = Math.min(bytes.length, limits[key]);
-    while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
-    const text = new TextDecoder().decode(bytes.subarray(0, end)).trim();
+    const text = utf8Clip(values[key], limits[key]);
     if (text) context[key] = text;
   }
   return Object.keys(context).length ? context : undefined;
@@ -95,8 +166,18 @@ export type StoredDraft = DraftResult & SavedMetadata & { contactId: string };
 export type StoredLookup = LookupWorkspaceResult & SavedMetadata;
 export type StoredMinutes = MinutesResult & SavedMetadata;
 export type StoredResult = StoredReminder | StoredDraft;
-type Receipt = { commandId: string; reminderId?: string; draftId?: string };
-export type CommitResult = { records: StoredResult[]; created: boolean };
+type Receipt = {
+  commandId: string;
+  reminderId?: string;
+  reminderIds?: string[];
+  draftId?: string;
+  deletedIds?: string[];
+};
+export type CommitResult = {
+  records: StoredResult[];
+  deletedIds?: string[];
+  created: boolean;
+};
 
 function storageError() {
   return new Error(
@@ -672,20 +753,21 @@ export function recordsForCommand(
   if (
     actions.some(
       (action) =>
-        action.type === "reschedule_reminder" || action.type === "update_draft",
+        action.type === "reschedule_reminder" ||
+        action.type === "update_draft" ||
+        action.type === "delete_reminder" ||
+        action.type === "delete_draft",
     )
   )
     throw new Error(
-      "A correction must update its existing reminder, not create records.",
+      "An edit or delete must update its existing record, not create records.",
     );
-  if (
-    !actions.length ||
-    actions.length > 2 ||
-    new Set(actions.map((action) => action.type)).size !== actions.length
-  )
+  if (!actions.length || actions.length > 4)
     throw new Error(
-      "A command must contain one draft, one reminder, or one of each. Nothing was saved.",
+      "A command must contain between one and four actions. Nothing was saved.",
     );
+  let reminderIndex = 0;
+  let draftCount = 0;
   return actions.map((action) => {
     const metadata = {
       ...(sessionId ? { sessionId } : {}),
@@ -693,17 +775,23 @@ export function recordsForCommand(
       createdAt: request.now,
       transcript: request.transcript,
     };
-    if (action.type === "create_reminder")
+    if (action.type === "create_reminder") {
+      const id =
+        reminderIndex === 0
+          ? request.command_id
+          : `${request.command_id}:${reminderIndex}`;
+      reminderIndex++;
       return {
         ...metadata,
-        id: request.command_id,
+        id,
         kind: "reminder",
         title: action.title,
         dueAt: action.due_at,
         timezone: request.timezone,
         ...(action.repeat ? { repeat: action.repeat } : {}),
       } satisfies StoredReminder;
-    if (action.type !== "draft_email") throw storageError();
+    }
+    if (action.type !== "draft_email" || ++draftCount > 1) throw storageError();
     const contact = request.contacts?.find(
       (candidate) => candidate.id === action.to_contact_id,
     );
@@ -728,13 +816,18 @@ export function recordsForCommand(
 function receiptFor(
   commandId: string,
   records: readonly StoredResult[],
+  deletedIds?: readonly string[],
 ): Receipt {
-  const reminder = records.find((record) => record.kind === "reminder");
+  const reminders = records.filter((record) => record.kind === "reminder");
   const draft = records.find((record) => record.kind === "draft");
   return {
     commandId,
-    ...(reminder ? { reminderId: reminder.id } : {}),
+    ...(reminders[0] ? { reminderId: reminders[0].id } : {}),
+    ...(reminders.length > 1
+      ? { reminderIds: reminders.map((r) => r.id) }
+      : {}),
     ...(draft ? { draftId: draft.id } : {}),
+    ...(deletedIds?.length ? { deletedIds: [...deletedIds] } : {}),
   };
 }
 
@@ -751,9 +844,37 @@ export async function commitCommand(
     actions.length === 1 && actions[0].type === "update_draft"
       ? actions[0]
       : undefined;
+  const deleteReminders = actions.filter(
+    (a): a is Extract<CommandAction, { type: "delete_reminder" }> =>
+      a.type === "delete_reminder",
+  );
+  const deleteDrafts = actions.filter(
+    (a): a is Extract<CommandAction, { type: "delete_draft" }> =>
+      a.type === "delete_draft",
+  );
+  const isDelete =
+    deleteReminders.length + deleteDrafts.length === actions.length &&
+    actions.length > 0;
+
+  const knownReminders = [
+    ...(request.reminder_context ? [request.reminder_context] : []),
+    ...(request.reminders_context ?? []),
+  ];
+  const knownDrafts = [
+    ...(request.draft_context ? [request.draft_context] : []),
+    ...(request.drafts_context ?? []),
+  ];
+  const strictSingleReminder =
+    Boolean(request.reminder_context) && !request.reminders_context?.length;
+  const strictSingleDraft =
+    Boolean(request.draft_context) && !request.drafts_context?.length;
+
+  const matchedDraftSnapshot = draftUpdate
+    ? knownDrafts.find((d) => d.id === draftUpdate.draft_id)
+    : undefined;
   if (
     draftUpdate &&
-    (request.draft_context?.id !== draftUpdate.draft_id ||
+    (!matchedDraftSnapshot ||
       (request.selected_draft_id &&
         request.selected_draft_id !== draftUpdate.draft_id) ||
       !draftUpdate.subject.trim() ||
@@ -762,19 +883,41 @@ export async function commitCommand(
     throw new Error(
       "This update has no matching saved draft. Nothing was changed.",
     );
+
+  const matchedReminderSnapshot = correction
+    ? knownReminders.find((r) => r.id === correction.reminder_id)
+    : undefined;
   if (
     correction &&
-    (request.reminder_context?.id !== correction.reminder_id ||
+    (!matchedReminderSnapshot ||
       (request.selected_reminder_id &&
         request.selected_reminder_id !== correction.reminder_id) ||
-      !Number.isFinite(Date.parse(correction.due_at)) ||
-      Date.parse(correction.due_at) <= Date.parse(request.now))
+      (correction.due_at !== undefined &&
+        (!Number.isFinite(Date.parse(correction.due_at)) ||
+          Date.parse(correction.due_at) <= Date.parse(request.now))) ||
+      (!correction.due_at && !correction.title && !correction.repeat))
   )
     throw new Error(
       "This correction has no matching saved reminder or valid future time. Nothing was changed.",
     );
+
+  if (isDelete) {
+    for (const del of deleteReminders) {
+      if (!knownReminders.some((r) => r.id === del.reminder_id))
+        throw new Error(
+          "This deletion has no matching saved reminder. Nothing was changed.",
+        );
+    }
+    for (const del of deleteDrafts) {
+      if (!knownDrafts.some((d) => d.id === del.draft_id))
+        throw new Error(
+          "This deletion has no matching saved draft. Nothing was changed.",
+        );
+    }
+  }
+
   const proposed =
-    correction || draftUpdate
+    correction || draftUpdate || isDelete
       ? []
       : recordsForCommand(request, actions, sessionId);
   const db = await openStore();
@@ -793,28 +936,59 @@ export async function commitCommand(
     const commands = tx.objectStore("commands");
     let outcome: CommitResult | undefined;
     let failure: Error | undefined;
+    let touchedReminders = false;
     const receipt = commands.get(request.command_id);
     receipt.onsuccess = () => {
       const existingReceipt = receipt.result as Receipt | undefined;
+      if (existingReceipt?.deletedIds?.length) {
+        outcome = {
+          records: [],
+          deletedIds: existingReceipt.deletedIds,
+          created: false,
+        };
+        return;
+      }
+      if (isDelete && !existingReceipt) {
+        const deletedIds: string[] = [];
+        for (const del of deleteReminders) {
+          tx.objectStore("reminders").delete(del.reminder_id);
+          tx.objectStore("settings").delete("mail:" + del.reminder_id);
+          deletedIds.push(del.reminder_id);
+          touchedReminders = true;
+        }
+        for (const del of deleteDrafts) {
+          tx.objectStore("drafts").delete(del.draft_id);
+          deletedIds.push(del.draft_id);
+        }
+        commands.add(receiptFor(request.command_id, [], deletedIds));
+        outcome = { records: [], deletedIds, created: true };
+        return;
+      }
       const references = existingReceipt
         ? [
-            existingReceipt.reminderId && {
-              store: "reminders",
-              id: existingReceipt.reminderId,
-            },
-            existingReceipt.draftId && {
-              store: "drafts",
-              id: existingReceipt.draftId,
-            },
-          ].filter((entry): entry is { store: string; id: string } =>
-            Boolean(entry),
-          )
+            ...(existingReceipt.reminderIds?.length
+              ? existingReceipt.reminderIds.map((id) => ({
+                  store: "reminders",
+                  id,
+                }))
+              : existingReceipt.reminderId
+                ? [{ store: "reminders", id: existingReceipt.reminderId }]
+                : []),
+            ...(existingReceipt.draftId
+              ? [{ store: "drafts", id: existingReceipt.draftId }]
+              : []),
+          ]
         : draftUpdate
           ? [{ store: "drafts", id: draftUpdate.draft_id }]
           : correction
             ? [{ store: "reminders", id: correction.reminder_id }]
             : [
                 { store: "reminders", id: request.command_id },
+                ...proposed
+                  .filter(
+                    (r) => r.kind === "reminder" && r.id !== request.command_id,
+                  )
+                  .map((r) => ({ store: "reminders", id: r.id })),
                 { store: "drafts", id: `draft:${request.command_id}` },
               ];
       if (!references.length) {
@@ -837,9 +1011,10 @@ export async function commitCommand(
             if (
               !original ||
               original.kind !== "reminder" ||
-              original.sessionId !== sessionId ||
-              Date.parse(original.dueAt) !==
-                Date.parse(request.reminder_context!.due_at)
+              (strictSingleReminder &&
+                (original.sessionId !== sessionId ||
+                  Date.parse(original.dueAt) !==
+                    Date.parse(request.reminder_context!.due_at)))
             ) {
               failure = new Error(
                 "This reminder changed or is outside this conversation. Record the correction again. Nothing was changed.",
@@ -849,25 +1024,27 @@ export async function commitCommand(
             }
             const updated: StoredReminder = {
               ...original,
-              dueAt: correction.due_at,
+              ...(correction.title ? { title: correction.title } : {}),
+              ...(correction.due_at ? { dueAt: correction.due_at } : {}),
               timezone: request.timezone,
               ...(correction.repeat ? { repeat: correction.repeat } : {}),
             };
             queueOwnerMail(tx, updated);
             tx.objectStore("reminders").put(updated);
             commands.add(receiptFor(request.command_id, [updated]));
-            // created means this command receipt was committed for the first time.
+            touchedReminders = true;
             outcome = { records: [updated], created: true };
           } else if (draftUpdate && !existingReceipt) {
             const original = existing[0];
-            const snapshot = request.draft_context!;
+            const snapshot = matchedDraftSnapshot!;
             if (
               !original ||
               original.kind !== "draft" ||
-              original.sessionId !== sessionId ||
-              original.subject !== snapshot.subject ||
-              original.body !== snapshot.body ||
-              original.to !== snapshot.to
+              (strictSingleDraft &&
+                (original.sessionId !== sessionId ||
+                  original.subject !== snapshot.subject ||
+                  original.body !== snapshot.body ||
+                  original.to !== snapshot.to))
             ) {
               failure = new Error(
                 "This draft changed or is outside this conversation. Record the edit again. Nothing was changed.",
@@ -875,8 +1052,21 @@ export async function commitCommand(
               tx.abort();
               return;
             }
+            const nextContact = draftUpdate.to_contact_id
+              ? request.contacts?.find(
+                  (c) => c.id === draftUpdate.to_contact_id,
+                )
+              : undefined;
             const updated: StoredDraft = {
               ...original,
+              ...(nextContact
+                ? {
+                    contactId: nextContact.id,
+                    recipient: nextContact.name,
+                    to: nextContact.email,
+                    title: `Draft to ${nextContact.name}`,
+                  }
+                : {}),
               subject: draftUpdate.subject,
               body: draftUpdate.body,
             };
@@ -891,7 +1081,10 @@ export async function commitCommand(
               commands.add(receiptFor(request.command_id, existing));
           } else {
             proposed.forEach((record) => {
-              if (record.kind === "reminder") queueOwnerMail(tx, record);
+              if (record.kind === "reminder") {
+                queueOwnerMail(tx, record);
+                touchedReminders = true;
+              }
               tx.objectStore(
                 record.kind === "draft" ? "drafts" : "reminders",
               ).add(record);
@@ -909,7 +1102,8 @@ export async function commitCommand(
       if (outcome) {
         if (
           outcome.created &&
-          outcome.records.some((r) => r.kind === "reminder")
+          (touchedReminders ||
+            outcome.records.some((r) => r.kind === "reminder"))
         )
           signalReminderChange();
         resolve(outcome);

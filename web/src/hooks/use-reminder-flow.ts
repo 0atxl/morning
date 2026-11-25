@@ -23,6 +23,7 @@ import {
   selectWorkspaceSession,
   deleteWorkspaceSession,
   previousTurnContext,
+  recentTurnsContext,
   storeTurn,
   type Session,
   type Turn,
@@ -60,7 +61,7 @@ import {
   requestMeetingMinutes,
 } from "@/lib/minutes";
 import {
-  relevantContacts,
+  allContactsForCommand,
   type ContactOption,
   type GuestContact,
 } from "@/lib/contacts";
@@ -154,6 +155,22 @@ export function useReminderFlow() {
   const [selecting, setSelecting] = useState(false);
   const selectingRef = useRef(false);
   const [selectionError, setSelectionError] = useState("");
+  const [autoStop, setAutoStopState] = useState<boolean>(() => {
+    try {
+      const saved = window.localStorage.getItem("morning.auto-stop");
+      return saved === null ? true : saved === "true";
+    } catch {
+      return true;
+    }
+  });
+  function setAutoStop(next: boolean) {
+    setAutoStopState(next);
+    try {
+      window.localStorage.setItem("morning.auto-stop", String(next));
+    } catch {
+      // Ignore storage errors in restricted contexts.
+    }
+  }
   const [execution, reportExecution] =
     useState<ExecutionActivity>(idleExecution);
   const orbCore = useRef<HTMLSpanElement>(null);
@@ -710,27 +727,41 @@ export function useReminderFlow() {
     const rescheduling =
       command.response.actions[0]?.type === "reschedule_reminder";
     const updatingDraft = command.response.actions[0]?.type === "update_draft";
+    const deletingReminder = command.response.actions.every(
+      (action) => action.type === "delete_reminder",
+    );
+    const deletingDraft = command.response.actions.every(
+      (action) => action.type === "delete_draft",
+    );
     const stages: ExecutionActivity["stages"] = command.response.actions.map(
       (action) =>
         action.type === "draft_email"
           ? "MAIL"
           : action.type === "reschedule_reminder" ||
-              action.type === "update_draft"
+              action.type === "update_draft" ||
+              action.type === "delete_reminder" ||
+              action.type === "delete_draft"
             ? "PEN"
             : "DIAL",
     );
     reportExecution({
       requestId: command.request.command_id,
       stages,
-      status: rescheduling
-        ? "Updating reminder"
-        : updatingDraft
-          ? "Updating draft"
-          : stages.length === 2
-            ? "Saving draft and reminder together"
-            : stages[0] === "MAIL"
-              ? "Saving draft"
-              : "Saving reminder",
+      status: deletingReminder
+        ? "Deleting reminder"
+        : deletingDraft
+          ? "Deleting draft"
+          : rescheduling
+            ? "Updating reminder"
+            : updatingDraft
+              ? "Updating draft"
+              : stages.length >= 2 &&
+                  stages.includes("MAIL") &&
+                  stages.includes("DIAL")
+                ? "Saving draft and reminder together"
+                : stages[0] === "MAIL"
+                  ? "Saving draft"
+                  : "Saving reminder",
       running: true,
     });
     saving.current = true;
@@ -745,43 +776,75 @@ export function useReminderFlow() {
       saving.current = false;
     }
     if (!current(id)) return;
+    const deletedSet = new Set(outcome.deletedIds ?? []);
     setRecords((previous) => [
       ...outcome.records,
       ...previous.filter(
-        (record) => !outcome.records.some((saved) => saved.id === record.id),
+        (record) =>
+          !deletedSet.has(record.id) &&
+          !outcome.records.some((saved) => saved.id === record.id),
       ),
     ]);
     const hasDraft = outcome.records.some((result) => result.kind === "draft");
     const hasReminder = outcome.records.some(
       (result) => result.kind === "reminder",
     );
+    const operation = deletingReminder
+      ? ("delete_reminder" as const)
+      : deletingDraft
+        ? ("delete_draft" as const)
+        : rescheduling
+          ? ("reschedule_reminder" as const)
+          : updatingDraft
+            ? ("update_draft" as const)
+            : undefined;
+    const confirmation = outcome.created
+      ? confirmationText(
+          outcome.records,
+          operation,
+          command.response.replyLanguage,
+        )
+      : "This command is already saved";
+    // Persist the confirmation reply on the turn so History timelines and
+    // rolling recent_turns always retain completed reminder/draft outcomes.
+    if (outcome.created) {
+      command.turn = {
+        ...command.turn,
+        reply: confirmation,
+        replyLanguage: command.response.replyLanguage,
+      };
+      try {
+        await storeTurn(command.turn);
+      } catch {
+        // Non-fatal: the reminder/draft transaction already committed cleanly.
+      }
+      if (mounted.current)
+        setTurns((previous) =>
+          previous.map((turn) =>
+            turn.id === command.turn.id ? command.turn : turn,
+          ),
+        );
+    }
     reportExecution({
       requestId: command.request.command_id,
       stages,
       status: !outcome.created
         ? "Command already saved"
-        : rescheduling
-          ? "Reminder updated"
-          : updatingDraft
-            ? "Draft updated"
-            : hasDraft && hasReminder
-              ? "Draft and reminder saved together"
-              : hasDraft
-                ? "Draft saved"
-                : "Reminder saved",
+        : deletingReminder
+          ? "Reminder deleted"
+          : deletingDraft
+            ? "Draft deleted"
+            : rescheduling
+              ? "Reminder updated"
+              : updatingDraft
+                ? "Draft updated"
+                : hasDraft && hasReminder
+                  ? "Draft and reminder saved together"
+                  : hasDraft
+                    ? "Draft saved"
+                    : "Reminder saved",
       running: false,
     });
-    const confirmation = outcome.created
-      ? confirmationText(
-          outcome.records,
-          rescheduling
-            ? "reschedule_reminder"
-            : updatingDraft
-              ? "update_draft"
-              : undefined,
-          command.response.replyLanguage,
-        )
-      : "This command is already saved";
     setView((previous) => ({
       ...previous,
       phase: "saved",
@@ -819,6 +882,205 @@ export function useReminderFlow() {
     }));
   }
 
+  function collectContextItems(sessionId: string) {
+    const sessionReminders = records
+      .filter(
+        (record): record is StoredReminder =>
+          record.kind === "reminder" && record.sessionId === sessionId,
+      )
+      .map((record) => ({ ...record }));
+    const otherReminders = records
+      .filter(
+        (record): record is StoredReminder =>
+          record.kind === "reminder" && record.sessionId !== sessionId,
+      )
+      .map((record) => ({ ...record }));
+    const allReminders = [...sessionReminders, ...otherReminders].slice(0, 10);
+
+    const sessionDrafts = records
+      .filter(
+        (record): record is StoredDraft =>
+          record.kind === "draft" && record.sessionId === sessionId,
+      )
+      .map((record) => ({ ...record }));
+    const otherDrafts = records
+      .filter(
+        (record): record is StoredDraft =>
+          record.kind === "draft" && record.sessionId !== sessionId,
+      )
+      .map((record) => ({ ...record }));
+    const allDrafts = [...sessionDrafts, ...otherDrafts].slice(0, 10);
+
+    return { sessionReminders, allReminders, sessionDrafts, allDrafts };
+  }
+
+  function currentLookupContext(sessionId: string) {
+    const latestTurn = turns
+      .filter((turn) => turn.sessionId === sessionId)
+      .at(-1);
+    return {
+      latestTurn,
+      lookupContext:
+        pending.current?.turn.sessionId === sessionId &&
+        pending.current.response?.kind === "clarification"
+          ? pending.current.response.lookupContext
+          : latestTurn?.lookupContext,
+    };
+  }
+
+  async function dispatchTranscript(
+    transcript: string,
+    sessionId: string,
+    id: number,
+    latestTurn: Turn | undefined,
+    lookupContext: LookupContext | undefined,
+  ) {
+    const { sessionReminders, allReminders, sessionDrafts, allDrafts } =
+      collectContextItems(sessionId);
+
+    if (!meetingCommand(transcript) && /\b(send|deliver)\b/i.test(transcript))
+      setView((previous) => ({
+        ...previous,
+        deliveryNotice:
+          "Morning can prepare a draft for you to send in Gmail.",
+      }));
+    const meeting = meetingCommand(transcript);
+    if (meeting) minutesRequest(transcript, meeting.language);
+    if (!meeting && new TextEncoder().encode(transcript).byteLength > 8192)
+      throw new Error(
+        "This command is too long. Enter or record a shorter command.",
+      );
+    const activeLookup =
+      !meeting && continuesLookupContext(transcript, lookupContext)
+        ? lookupContext
+        : undefined;
+    if (lookupContext && !activeLookup && latestTurn?.lookupContext) {
+      const cleared = { ...latestTurn };
+      delete cleared.lookupContext;
+      delete cleared.reply;
+      await storeTurn(cleared);
+      if (mounted.current)
+        setTurns((previous) =>
+          previous.map((item) => (item.id === cleared.id ? cleared : item)),
+        );
+      if (!current(id)) return;
+    }
+    const turn = {
+      id: crypto.randomUUID(),
+      sessionId,
+      transcript,
+      createdAt: new Date().toISOString(),
+    };
+    const previous_turn = previousTurnContext(turns, sessionId);
+    const recent_turns = recentTurnsContext(turns, sessionId);
+    pending.current = {
+      turn,
+      turnSaved: false,
+      reminders: allReminders,
+      drafts: allDrafts,
+      request: activeLookup
+        ? {
+            command_id: turn.id,
+            transcript,
+            now: turn.createdAt,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            lookup_context: activeLookup,
+          }
+        : {
+            command_id: turn.id,
+            transcript,
+            now: turn.createdAt,
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            contacts: allContactsForCommand(contacts),
+            ...(previous_turn ? { previous_turn } : {}),
+            ...(recent_turns ? { recent_turns } : {}),
+            ...(sessionReminders.length === 1
+              ? {
+                  reminder_context: {
+                    id: sessionReminders[0].id,
+                    title: sessionReminders[0].title,
+                    due_at: sessionReminders[0].dueAt,
+                    ...(sessionReminders[0].repeat
+                      ? { repeat: sessionReminders[0].repeat }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(allReminders.length > 0
+              ? {
+                  reminders_context: allReminders.map((r) => ({
+                    id: r.id,
+                    title: r.title,
+                    due_at: r.dueAt,
+                    ...(r.repeat ? { repeat: r.repeat } : {}),
+                  })),
+                }
+              : {}),
+            ...(sessionDrafts.length === 1
+              ? {
+                  draft_context: {
+                    id: sessionDrafts[0].id,
+                    subject: sessionDrafts[0].subject,
+                    body: sessionDrafts[0].body,
+                    recipient: sessionDrafts[0].recipient,
+                    to: sessionDrafts[0].to,
+                  },
+                }
+              : {}),
+            ...(allDrafts.length > 0
+              ? {
+                  drafts_context: allDrafts.map((d) => ({
+                    id: d.id,
+                    subject: d.subject,
+                    body: d.body,
+                    recipient: d.recipient,
+                    to: d.to,
+                  })),
+                }
+              : {}),
+          },
+    };
+    await savePending(id);
+  }
+
+  async function submitText(rawText: string) {
+    const transcript = rawText.trim();
+    if (!transcript || busy.current) return;
+    if (loadFailed.current) {
+      await load();
+      return;
+    }
+    const sessionId = selectedSession;
+    if (!sessionId || sessionId === earlierActivity || selectingRef.current)
+      return;
+    const { latestTurn, lookupContext } = currentLookupContext(sessionId);
+    setCommandSession(sessionId);
+    busy.current = true;
+    retryTarget.current = "voice";
+    const id = ++generation.current;
+    cancelSpeech();
+    pending.current = null;
+    retainedAudio.current = [];
+    setView({
+      ...readyVoice,
+      phase: "processing",
+      captions: { final: transcript, interim: "" },
+    });
+    try {
+      await dispatchTranscript(
+        transcript,
+        sessionId,
+        id,
+        latestTurn,
+        lookupContext,
+      );
+    } catch (error) {
+      if (current(id)) showError(error);
+    } finally {
+      if (current(id)) busy.current = false;
+    }
+  }
+
   async function record(
     replay?: readonly Blob[],
     owner: "pointer" | "hold" = "pointer",
@@ -831,26 +1093,7 @@ export function useReminderFlow() {
     const sessionId = selectedSession;
     if (!sessionId || sessionId === earlierActivity || selectingRef.current)
       return;
-    const latestTurn = turns
-      .filter((turn) => turn.sessionId === sessionId)
-      .at(-1);
-    const lookupContext =
-      pending.current?.turn.sessionId === sessionId &&
-      pending.current.response?.kind === "clarification"
-        ? pending.current.response.lookupContext
-        : latestTurn?.lookupContext;
-    const reminders = records
-      .filter(
-        (record): record is StoredReminder =>
-          record.kind === "reminder" && record.sessionId === sessionId,
-      )
-      .map((record) => ({ ...record }));
-    const drafts = records
-      .filter(
-        (record): record is StoredDraft =>
-          record.kind === "draft" && record.sessionId === sessionId,
-      )
-      .map((record) => ({ ...record }));
+    const { latestTurn, lookupContext } = currentLookupContext(sessionId);
     setCommandSession(sessionId);
     busy.current = true;
     retryTarget.current = "voice";
@@ -895,88 +1138,20 @@ export function useReminderFlow() {
         },
       },
       replay,
+      { autoStopOnSilence: owner === "pointer" && autoStop },
     );
     capture.current = session;
     try {
       const transcript = await session.run();
       if (!current(id)) return;
-      if (!meetingCommand(transcript) && /\b(send|deliver)\b/i.test(transcript))
-        setView((previous) => ({
-          ...previous,
-          deliveryNotice:
-            "Morning can prepare a draft for you to send in Gmail.",
-        }));
       retainedAudio.current = session.audioComplete ? [...session.audio] : [];
-      const meeting = meetingCommand(transcript);
-      if (meeting) minutesRequest(transcript, meeting.language);
-      if (!meeting && new TextEncoder().encode(transcript).byteLength > 8192)
-        throw new Error(
-          "This command is too long. Record a shorter, complete reminder command.",
-        );
-      const activeLookup =
-        !meeting && continuesLookupContext(transcript, lookupContext)
-          ? lookupContext
-          : undefined;
-      if (lookupContext && !activeLookup && latestTurn?.lookupContext) {
-        const cleared = { ...latestTurn };
-        delete cleared.lookupContext;
-        delete cleared.reply;
-        await storeTurn(cleared);
-        if (mounted.current)
-          setTurns((previous) =>
-            previous.map((item) => (item.id === cleared.id ? cleared : item)),
-          );
-        if (!current(id)) return;
-      }
-      const turn = {
-        id: crypto.randomUUID(),
-        sessionId,
+      await dispatchTranscript(
         transcript,
-        createdAt: new Date().toISOString(),
-      };
-      const previous_turn = previousTurnContext(turns, sessionId);
-      pending.current = {
-        turn,
-        turnSaved: false,
-        reminders,
-        drafts,
-        request: activeLookup
-          ? {
-              command_id: turn.id,
-              transcript,
-              now: turn.createdAt,
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-              lookup_context: activeLookup,
-            }
-          : {
-              command_id: turn.id,
-              transcript,
-              now: turn.createdAt,
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-              contacts: relevantContacts(contacts, transcript),
-              ...(previous_turn ? { previous_turn } : {}),
-              ...(reminders.length === 1
-                ? {
-                    reminder_context: {
-                      id: reminders[0].id,
-                      due_at: reminders[0].dueAt,
-                    },
-                  }
-                : {}),
-              ...(drafts.length === 1
-                ? {
-                    draft_context: {
-                      id: drafts[0].id,
-                      subject: drafts[0].subject,
-                      body: drafts[0].body,
-                      recipient: drafts[0].recipient,
-                      to: drafts[0].to,
-                    },
-                  }
-                : {}),
-            },
-      };
-      await savePending(id);
+        sessionId,
+        id,
+        latestTurn,
+        lookupContext,
+      );
     } catch (error) {
       if (!current(id)) return;
       retainedAudio.current = session.audioComplete ? [...session.audio] : [];
@@ -1327,6 +1502,9 @@ export function useReminderFlow() {
     chooseReminder,
     chooseDraft,
     record,
+    submitText,
+    autoStop,
+    setAutoStop,
     retry,
     cancel,
     edit,

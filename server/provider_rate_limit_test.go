@@ -38,7 +38,7 @@ func TestCommandRateLimitForwardsWaitWithoutRetryingOrLeakingProviderBody(t *tes
 	})
 	response := requestAPI(handler, "/api/commands", fixtureCommand)
 	var result apiError
-	if json.Unmarshal(response.Body.Bytes(), &result) != nil || response.Code != 429 || result.Error.Code != "command_provider_rate_limited" || response.Header().Get("Retry-After") != "7200" || calls != 1 {
+	if json.Unmarshal(response.Body.Bytes(), &result) != nil || response.Code != 429 || result.Error.Code != "command_provider_rate_limited" || response.Header().Get("Retry-After") != "7200" || calls != len(defaultGroqModels) {
 		t.Fatalf("provider timing was lost or retried: %d %s calls=%d", response.Code, response.Body.String(), calls)
 	}
 	if !strings.Contains(result.Error.Message, "Groq") || strings.Contains(response.Body.String(), "private") || strings.Contains(response.Body.String(), "fixture-provider-key") {
@@ -60,7 +60,7 @@ func TestLookupRateLimitRetainsGroqWaitAndLookupScope(t *testing.T) {
 	payload, _ := json.Marshal(request)
 	response := requestAPI(handler, "/api/commands", string(payload))
 	var result apiError
-	if json.Unmarshal(response.Body.Bytes(), &result) != nil || response.Code != 429 || result.Error.Code != "lookup_quota_limited" || calls != 1 || response.Header().Get("Retry-After") != "13" || strings.Contains(response.Body.String(), "private") {
-		t.Fatalf("lookup failure scope or timing was lost or retried: %d %s", response.Code, response.Body.String())
+	if json.Unmarshal(response.Body.Bytes(), &result) != nil || response.Code != 429 || result.Error.Code != "lookup_quota_limited" || calls != len(defaultGroqModels) || response.Header().Get("Retry-After") != "13" || strings.Contains(response.Body.String(), "private") {
+		t.Fatalf("lookup failure scope or timing was lost or retried: %d %s calls=%d", response.Code, response.Body.String(), calls)
 	}
 }

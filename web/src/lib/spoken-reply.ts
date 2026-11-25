@@ -1,19 +1,52 @@
 import type { WorkspaceResult } from "./results.ts";
 import { speechLanguage, type SpeechLanguage } from "./language.ts";
 
+export function speechClip(text: string, limit = 240): string {
+  const clean = text.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+  const chars = [...clean];
+  if (chars.length <= limit) return clean;
+  // Prefer the first complete sentence if it fits within the speech cap.
+  for (const sep of [". ", "। ", "! ", "? "]) {
+    const idx = clean.indexOf(sep);
+    if (idx > 0) {
+      const candidate = clean.slice(0, idx + sep.trim().length).trim();
+      if ([...candidate].length <= limit) return candidate;
+    }
+  }
+  const sliced = chars.slice(0, Math.max(1, limit - 3)).join("");
+  const lastSpace = sliced.lastIndexOf(" ");
+  const clipped =
+    lastSpace > Math.floor(limit / 2) ? sliced.slice(0, lastSpace) : sliced;
+  return `${clipped.replace(/[ ,;:-]+$/, "")}...`;
+}
+
 export function confirmationText(
   results: readonly WorkspaceResult[],
-  operation?: "reschedule_reminder" | "update_draft",
+  operation?:
+    | "reschedule_reminder"
+    | "update_draft"
+    | "delete_reminder"
+    | "delete_draft",
   language: SpeechLanguage = "en",
 ) {
+  if (operation === "delete_reminder")
+    return language === "hi" ? "रिमाइंडर हटा दिया गया।" : "Reminder deleted.";
+  if (operation === "delete_draft")
+    return language === "hi" ? "ईमेल ड्राफ्ट हटा दिया गया।" : "Draft deleted.";
   const draft = results.some((result) => result.kind === "draft");
-  const reminder = results.find((result) => result.kind === "reminder");
+  const reminders = results.filter((result) => result.kind === "reminder");
+  const reminder = reminders[0];
   if (!reminder && language === "hi")
     return operation === "update_draft"
       ? "ईमेल ड्राफ्ट अपडेट हो गया।"
       : "ईमेल ड्राफ्ट सेव हो गया।";
   if (!reminder)
     return operation === "update_draft" ? "Draft updated." : "Draft saved.";
+  if (reminders.length > 1) {
+    if (language === "hi")
+      return `${draft ? "ईमेल ड्राफ्ट और " : ""}${reminders.length} रिमाइंडर सेव हो गए।`;
+    return `${draft ? "Draft and " : ""}${reminders.length} reminders saved.`;
+  }
   const time = new Intl.DateTimeFormat(language === "hi" ? "hi-IN" : "en", {
     timeZone: reminder.timezone,
     weekday: "long",
@@ -69,7 +102,7 @@ export class SpokenReply {
     report: PlaybackReport,
     language = speechLanguage(text),
   ) {
-    this.text = text;
+    this.text = speechClip(text, 240);
     this.report = report;
     this.language = language;
   }

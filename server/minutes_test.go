@@ -66,16 +66,13 @@ func TestMinutesContract(t *testing.T) {
 					Messages       []struct{ Role, Content string }
 					Tools          json.RawMessage
 					ResponseFormat struct {
-						JSONSchema struct {
-							Name   string
-							Strict bool
-						} `json:"json_schema"`
+						Type string `json:"type"`
 					} `json:"response_format"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
 					t.Fatal(err)
 				}
-				if sent.Model != groqModel || sent.Tools != nil || !sent.ResponseFormat.JSONSchema.Strict || sent.ResponseFormat.JSONSchema.Name != "meeting_minutes" ||
+				if sent.Model != groqModel || sent.Tools != nil || sent.ResponseFormat.Type != "json_object" ||
 					len(sent.Messages) != 2 || sent.Messages[0].Role != "system" || sent.Messages[1].Role != "user" {
 					t.Fatal("expected a minutes-only structured completion without tools")
 				}

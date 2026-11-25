@@ -86,6 +86,33 @@ func fixtureMCP(t *testing.T, r *http.Request, result string, inspect func(map[s
 	}
 }
 
+func fixtureTavilyREST(t *testing.T, r *http.Request, result string, inspect func(map[string]any)) *http.Response {
+	t.Helper()
+	if r.URL.String() != tavilyRESTURL || r.Method != "POST" || r.Header.Get("Authorization") != "Bearer fixture-tavily-secret" || r.URL.RawQuery != "" {
+		t.Fatalf("wrong Tavily REST endpoint or auth: %s", r.URL)
+	}
+	var args map[string]any
+	if json.NewDecoder(r.Body).Decode(&args) != nil {
+		t.Fatal("invalid Tavily REST request")
+	}
+	if deadline, ok := r.Context().Deadline(); !ok || time.Until(deadline) > lookupTimeout {
+		t.Fatal("lookup needs a bounded deadline")
+	}
+	if inspect != nil {
+		inspect(args)
+	}
+	// Unwrap legacy MCP JSON-RPC fixture envelopes into plain REST JSON when passed.
+	var mcp struct {
+		Result struct {
+			StructuredContent json.RawMessage `json:"structuredContent"`
+		} `json:"result"`
+	}
+	if json.Unmarshal([]byte(result), &mcp) == nil && len(mcp.Result.StructuredContent) > 0 && string(mcp.Result.StructuredContent) != "null" {
+		return lookupJSONResponse(200, string(mcp.Result.StructuredContent))
+	}
+	return lookupJSONResponse(200, result)
+}
+
 func TestLookupHotelsUseSearchOnlyAndKeepGroundedDistinctProperties(t *testing.T) {
 	calls := 0
 	s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
@@ -100,7 +127,7 @@ func TestLookupHotelsUseSearchOnlyAndKeepGroundedDistinctProperties(t *testing.T
 				evidenceItem(1, "Hotel Pink Court", "Hotel Pink Court is near Jaipur railway station."),
 				evidenceItem(2, "Hotel Amber Rooms", "Hotel Amber Rooms is near Jaipur railway station.")), nil
 		}
-		return fixtureMCP(t, r, fixture(t, "tavily-hotels.json"), func(args map[string]any) {
+		return fixtureTavilyREST(t, r, fixture(t, "tavily-hotels.json"), func(args map[string]any) {
 			if args["query"] != "Hotels near Jaipur railway station" || args["max_results"] != float64(3) || args["topic"] != "general" {
 				t.Fatalf("wrong search terms: %v", args)
 			}
@@ -116,8 +143,8 @@ func TestLookupHotelsUseSearchOnlyAndKeepGroundedDistinctProperties(t *testing.T
 		t.Fatalf("missing hotel result: %+v %v", outcome, err)
 	}
 	r := outcome.Result
-	if calls != 4 || len(r.Sources) != 3 || r.Status != "answered" || r.LookedUpAt != "2026-11-03T03:30:00Z" || !strings.Contains(r.Speech, "Hotel Station Garden") || utf8.RuneCountInString(r.Speech) > 240 {
-		t.Fatalf("bad result: %+v", r)
+	if calls != 2 || len(r.Sources) != 3 || r.Status != "answered" || r.LookedUpAt != "2026-11-03T03:30:00Z" || !strings.Contains(r.Speech, "Hotel Station Garden") || utf8.RuneCountInString(r.Speech) > 240 {
+		t.Fatalf("bad result (calls=%d): %+v", calls, r)
 	}
 	for _, source := range r.Sources {
 		if source.Excerpt != "" {
@@ -148,14 +175,10 @@ func TestLookupSpokenLocationContinuesOriginalSearch(t *testing.T) {
 func TestLookupNewsUsesTodayWindowAndPublicationTimes(t *testing.T) {
 	s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
 		if r.URL.String() == groqCommandURL {
-			body, _ := io.ReadAll(r.Body)
-			if strings.Contains(string(body), "Older technology") || strings.Contains(string(body), "no date") {
-				t.Fatal("out-of-window evidence reached synthesis")
-			}
-			return evidenceResponse("", evidenceItem(0, "Research centre", "India launches a technology research centre")), nil
+			t.Fatal("English news should complete in 1 Tavily REST call without a second Groq call")
 		}
-		return fixtureMCP(t, r, fixture(t, "tavily-news.json"), func(args map[string]any) {
-			if args["topic"] != "news" || args["time_range"] != "d" || args["query"] != "technology India" {
+		return fixtureTavilyREST(t, r, fixture(t, "tavily-news.json"), func(args map[string]any) {
+			if args["topic"] != "news" || args["time_range"] != "day" || args["query"] != "technology India" {
 				t.Fatalf("wrong news freshness request: %v", args)
 			}
 		}), nil
@@ -175,7 +198,7 @@ func TestLookupGoReleaseSpeaksOfficialEvidence(t *testing.T) {
 		if r.URL.String() == groqCommandURL {
 			return evidenceResponse("Go 1.99.2 is the latest stable release.", evidenceItem(0, "Stable Go release", "Go 1.99.2 is the latest stable release.")), nil
 		}
-		return fixtureMCP(t, r, fixture(t, "tavily-go-release.json"), func(args map[string]any) {
+		return fixtureTavilyREST(t, r, fixture(t, "tavily-go-release.json"), func(args map[string]any) {
 			domains, _ := args["include_domains"].([]any)
 			if len(domains) != 1 || domains[0] != "go.dev" {
 				t.Fatal("stable Go must prefer official sources")
@@ -400,11 +423,11 @@ func TestLookupFailureIsolationAndRedaction(t *testing.T) {
 
 func TestLookupPublicRateLimitAndEmptyResults(t *testing.T) {
 	s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
-		return fixtureMCP(t, r, `{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Detailed Results:"}]}}`, nil), nil
+		return fixtureTavilyREST(t, r, `{"results":[]}`, nil), nil
 	})
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 21; i++ {
 		outcome, err := s.lookup(context.Background(), lookupQuery{Kind: "news", Terms: "technology", Today: true}, "guest", "Asia/Kolkata")
-		if i < 4 {
+		if i < 20 {
 			if err != nil || outcome.Result == nil || outcome.Result.Status != "empty" || len(outcome.Result.Sources) != 0 {
 				t.Fatalf("wrong empty result: %+v %v", outcome, err)
 			}
@@ -448,7 +471,7 @@ func TestLookupRejectsMalformedEvidenceAndToolCalls(t *testing.T) {
 		t.Run(fmt.Sprint(len(payload)), func(t *testing.T) {
 			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
 				if r.URL.String() != groqCommandURL {
-					return fixtureMCP(t, r, fixture(t, "tavily-hotels.json"), nil), nil
+					return fixtureTavilyREST(t, r, fixture(t, "tavily-hotels.json"), nil), nil
 				}
 				body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"finish_reason": "stop", "message": map[string]any{"content": payload}}}})
 				return lookupJSONResponse(200, string(body)), nil
@@ -556,7 +579,7 @@ func TestLookupMCPQuotaErrorsStayRedacted(t *testing.T) {
 func TestLookupRejectsModelToolCallsAndDoesNotFollowRedirects(t *testing.T) {
 	s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
 		if r.URL.String() != groqCommandURL {
-			return fixtureMCP(t, r, fixture(t, "tavily-hotels.json"), nil), nil
+			return fixtureTavilyREST(t, r, fixture(t, "tavily-hotels.json"), nil), nil
 		}
 		return lookupJSONResponse(200, `{"choices":[{"finish_reason":"stop","message":{"content":"{\"answer\":\"\",\"items\":[]}","tool_calls":[{"function":{"name":"send_email"}}]}}]}`), nil
 	})
@@ -593,12 +616,12 @@ func TestLookupSearchRequiresCompleteSelectedEvidence(t *testing.T) {
 		{"whole supported sentence", "Other details. Acme is safe. More details.", "Acme is safe.", "Acme is safe.", "answered"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 2, "result": map[string]any{"structuredContent": map[string]any{"results": []tavilyItem{{Title: "Acme report", URL: "https://publisher.example/acme", Content: tc.excerpt}}}}})
+			payload, _ := json.Marshal(map[string]any{"results": []tavilyItem{{Title: "Acme report", URL: "https://publisher.example/acme", Content: tc.excerpt}}})
 			s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
 				if r.URL.String() == groqCommandURL {
 					return evidenceResponse(tc.answer, evidenceItem(0, "Acme", tc.quote)), nil
 				}
-				return fixtureMCP(t, r, string(payload), nil), nil
+				return fixtureTavilyREST(t, r, string(payload), nil), nil
 			})
 			outcome, err := s.lookup(context.Background(), lookupQuery{Kind: "web", Terms: "Is Acme safe?"}, "guest", "Asia/Kolkata")
 			if err != nil || outcome.Result == nil || outcome.Result.Status != tc.status || len(outcome.Result.Sources) != 1 {
@@ -623,7 +646,7 @@ func TestLookupSearchKeepsSupportedPartialResultsAndRejectsSwappedHotelLabels(t 
 					return evidenceResponse("", evidenceItem(0, label, "Hotel Station Garden is near Jaipur railway station."), evidenceItem(1, "Invented hotel", "Invented hotel is near the station.")), nil
 				}
 				payload := strings.Replace(fixture(t, "tavily-hotels.json"), "Hotel Station Garden is near Jaipur railway station.", "Hotel Station Garden is near Jaipur railway station. Hotel Elsewhere is far away.", 1)
-				return fixtureMCP(t, r, payload, nil), nil
+				return fixtureTavilyREST(t, r, payload, nil), nil
 			})
 			outcome, err := s.lookup(context.Background(), lookupQuery{Kind: "hotels", Place: "Jaipur railway station"}, "guest", "Asia/Kolkata")
 			if err != nil || outcome.Result == nil || strings.Contains(outcome.Result.Answer, "Invented hotel") || strings.Contains(outcome.Result.Answer, "Hotel Elsewhere") {

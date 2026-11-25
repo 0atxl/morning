@@ -16,8 +16,55 @@ import (
 
 const (
 	tavilyMCPURL  = "https://mcp.tavily.com/mcp/"
+	tavilyRESTURL = "https://api.tavily.com/search"
 	maxLookupBody = 256 << 10
 )
+
+// tavilyRESTSearch executes a single-hop search against Tavily's REST API,
+// returning an optional concise grounded answer and validated sources.
+func (s *lookupService) tavilyRESTSearch(ctx context.Context, args map[string]any, resultCap int) (string, []lookupSource, error) {
+	if s.tavilyKey == "" {
+		return "", nil, &lookupError{"search_not_configured", "Web search is not configured on Morning's server.", 0, false}
+	}
+	if resultCap <= 0 {
+		resultCap = lookupResultCap
+	}
+	body, err := json.Marshal(args)
+	if err != nil {
+		return "", nil, errInvalidProviderOutput
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tavilyRESTURL, bytes.NewReader(body))
+	if err != nil {
+		return "", nil, providerRequestError(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+s.tavilyKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	response, err := s.client.Do(req)
+	if err != nil {
+		return "", nil, providerRequestError(err)
+	}
+	defer response.Body.Close()
+	if err := lookupHTTPError(response.StatusCode, response.Header.Get("Retry-After")); err != nil {
+		return "", nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxLookupBody+1))
+	if err != nil {
+		return "", nil, providerRequestError(err)
+	}
+	if len(data) > maxLookupBody {
+		return "", nil, errInvalidProviderOutput
+	}
+	var payload struct {
+		Answer  string       `json:"answer"`
+		Results []tavilyItem `json:"results"`
+	}
+	if json.Unmarshal(data, &payload) != nil || payload.Results == nil {
+		return "", nil, errInvalidProviderOutput
+	}
+	sources := buildTavilySources(payload.Results, true, resultCap)
+	return lookupText(payload.Answer, 600), sources, nil
+}
 
 type mcpEnvelope struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -241,9 +288,13 @@ func parseTavilyResult(raw json.RawMessage) ([]lookupSource, error) {
 			}
 		}
 	}
-	sources := make([]lookupSource, 0, lookupResultCap)
+	return buildTavilySources(payload.Results, structuredDates, lookupResultCap), nil
+}
+
+func buildTavilySources(items []tavilyItem, structuredDates bool, limit int) []lookupSource {
+	sources := make([]lookupSource, 0, limit)
 	seen := make(map[string]bool)
-	for _, item := range payload.Results {
+	for _, item := range items {
 		link, ok := safeLookupURL(item.URL)
 		title := lookupText(item.Title, 200)
 		// Ignore tracking parameters for deduplication without altering the link
@@ -268,11 +319,11 @@ func parseTavilyResult(raw json.RawMessage) ([]lookupSource, error) {
 			source.PublishedAt = published.UTC().Format(time.RFC3339)
 		}
 		sources = append(sources, source)
-		if len(sources) == lookupResultCap {
+		if len(sources) == limit {
 			break
 		}
 	}
-	return sources, nil
+	return sources
 }
 
 func tavilyMCPError(raw []byte) error {

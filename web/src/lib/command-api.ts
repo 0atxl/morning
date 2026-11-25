@@ -7,6 +7,30 @@ import {
   type LookupResult,
 } from "./lookup-result.ts";
 
+export type RecentTurnContext = {
+  transcript?: string;
+  reply?: string;
+  kind?: string;
+  topic?: string;
+  answer?: string;
+  prior_session?: boolean;
+};
+
+export type ReminderContextItem = {
+  id: string;
+  title?: string;
+  due_at: string;
+  repeat?: "daily" | "weekly" | "weekdays";
+};
+
+export type DraftContextItem = {
+  id: string;
+  subject: string;
+  body: string;
+  recipient: string;
+  to: string;
+};
+
 export type CommandRequest = {
   command_id: string;
   transcript: string;
@@ -14,15 +38,11 @@ export type CommandRequest = {
   timezone: string;
   contacts?: Contact[];
   selected_contact_id?: string;
-  reminder_context?: { id: string; due_at: string };
+  reminder_context?: ReminderContextItem;
+  reminders_context?: ReminderContextItem[];
   selected_reminder_id?: string;
-  draft_context?: {
-    id: string;
-    subject: string;
-    body: string;
-    recipient: string;
-    to: string;
-  };
+  draft_context?: DraftContextItem;
+  drafts_context?: DraftContextItem[];
   selected_draft_id?: string;
   lookup_context?: LookupContext;
   previous_turn?: {
@@ -31,6 +51,7 @@ export type CommandRequest = {
     answer?: string;
     reply?: string;
   };
+  recent_turns?: RecentTurnContext[];
 };
 
 export type ReminderAction = {
@@ -46,20 +67,41 @@ export type DraftAction = {
   subject: string;
   body: string;
 };
+
 export type RescheduleAction = {
   type: "reschedule_reminder";
   reminder_id: string;
-  due_at: string;
+  title?: string;
+  due_at?: string;
   repeat?: "daily" | "weekly" | "weekdays";
 };
+
+export type DeleteReminderAction = {
+  type: "delete_reminder";
+  reminder_id: string;
+};
+
 export type UpdateDraftAction = {
   type: "update_draft";
   draft_id: string;
+  to_contact_id?: string;
   subject: string;
   body: string;
 };
+
+export type DeleteDraftAction = {
+  type: "delete_draft";
+  draft_id: string;
+};
+
 export type CommandAction =
-  ReminderAction | DraftAction | RescheduleAction | UpdateDraftAction;
+  | ReminderAction
+  | DraftAction
+  | RescheduleAction
+  | DeleteReminderAction
+  | UpdateDraftAction
+  | DeleteDraftAction;
+
 export type CommandResponse = (
   | { kind: "actions"; actions: CommandAction[] }
   | { kind: "reply"; text: string }
@@ -87,6 +129,38 @@ export function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function allRequestReminders(request: CommandRequest): ReminderContextItem[] {
+  const seen = new Set<string>();
+  const items: ReminderContextItem[] = [];
+  if (request.reminder_context) {
+    seen.add(request.reminder_context.id);
+    items.push(request.reminder_context);
+  }
+  for (const item of request.reminders_context ?? []) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      items.push(item);
+    }
+  }
+  return items;
+}
+
+function allRequestDrafts(request: CommandRequest): DraftContextItem[] {
+  const seen = new Set<string>();
+  const items: DraftContextItem[] = [];
+  if (request.draft_context) {
+    seen.add(request.draft_context.id);
+    items.push(request.draft_context);
+  }
+  for (const item of request.drafts_context ?? []) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      items.push(item);
+    }
+  }
+  return items;
 }
 
 export async function postJSON(
@@ -193,7 +267,7 @@ export function parseCommandResponse(
     );
   const language =
     value.reply_language === "hi" ? { replyLanguage: "hi" as const } : {};
-  if (value.lookup !== undefined || value.lookup_context !== undefined) {
+  if (value.lookup != null || value.lookup_context != null) {
     if (
       value.actions.length !== 0 ||
       value.reply !== undefined ||
@@ -213,8 +287,8 @@ export function parseCommandResponse(
       throw new RequestError(
         "Morning returned a mixed lookup and action. Please retry.",
       );
-    if (value.lookup !== undefined) {
-      if (value.lookup_context !== undefined || value.clarification !== null)
+    if (value.lookup != null) {
+      if (value.lookup_context != null || value.clarification !== null)
         throw new RequestError(
           "Morning returned an incomplete lookup. Please retry.",
         );
@@ -263,7 +337,7 @@ export function parseCommandResponse(
     value.clarification_options === undefined &&
     typeof value.reply === "string" &&
     value.reply.trim() &&
-    [...value.reply].length <= 240
+    [...value.reply.trim()].length <= 500
   )
     return { kind: "reply", text: value.reply.trim(), ...language };
   if (value.reply !== undefined)
@@ -314,7 +388,7 @@ export function parseCommandResponse(
   }
   if (
     value.actions.length < 1 ||
-    value.actions.length > 2 ||
+    value.actions.length > 4 ||
     value.clarification !== null ||
     value.clarification_options !== undefined
   ) {
@@ -322,10 +396,17 @@ export function parseCommandResponse(
       "Morning returned an incomplete command. Nothing was saved. Please retry.",
     );
   }
+  const knownReminders = allRequestReminders(request);
+  const knownDrafts = allRequestDrafts(request);
   const actions: CommandAction[] = [];
+  const seenReminderKeys = new Set<string>();
+  const seenDeletedReminders = new Set<string>();
+  const seenDeletedDrafts = new Set<string>();
+  let draftCount = 0;
+
   for (const item of value.actions) {
     const action = object(item);
-    if (!action || actions.some((entry) => entry.type === action.type))
+    if (!action || typeof action.type !== "string")
       throw new RequestError(
         "Morning returned duplicate or invalid actions. Nothing was saved. Please retry.",
       );
@@ -353,6 +434,12 @@ export function parseCommandResponse(
           "Morning returned an invalid reminder. Nothing was saved. Please retry.",
         );
       }
+      const key = `${action.title.trim().toLowerCase()}|${action.due_at}`;
+      if (seenReminderKeys.has(key))
+        throw new RequestError(
+          "Morning returned duplicate reminders. Nothing was saved. Please retry.",
+        );
+      seenReminderKeys.add(key);
       actions.push({
         type: "create_reminder",
         title: action.title.trim(),
@@ -394,51 +481,90 @@ export function parseCommandResponse(
         title: action.title.trim(),
         due_at: action.start,
       });
-      // The dashboard retains only the start as a reminder. Its calendar export
-      // is a one-minute marker; the validated event end is not stored or synced.
     } else if (action.type === "reschedule_reminder") {
+      const target = knownReminders.find((r) => r.id === action.reminder_id);
+      const hasDueAt =
+        typeof action.due_at === "string" && action.due_at.length > 0;
+      const hasTitle =
+        typeof action.title === "string" && action.title.trim().length > 0;
+      const hasRepeat =
+        typeof action.repeat === "string" && action.repeat.length > 0;
       if (
         value.actions.length !== 1 ||
-        !request.reminder_context ||
-        action.reminder_id !== request.reminder_context.id ||
+        !target ||
         (request.selected_reminder_id &&
-          action.reminder_id !== request.selected_reminder_id) ||
+          target.id !== request.selected_reminder_id) ||
         Object.keys(action).some(
-          (key) => !["type", "reminder_id", "due_at", "repeat"].includes(key),
+          (key) =>
+            !["type", "reminder_id", "title", "due_at", "repeat"].includes(key),
         ) ||
         (action.repeat !== undefined &&
           action.repeat !== "" &&
           action.repeat !== "daily" &&
           action.repeat !== "weekly" &&
           action.repeat !== "weekdays") ||
-        typeof action.due_at !== "string" ||
-        !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d$/.test(
-          action.due_at,
-        ) ||
-        !Number.isFinite(Date.parse(action.due_at)) ||
-        Date.parse(action.due_at) <= Date.parse(request.now)
+        (action.title !== undefined &&
+          (typeof action.title !== "string" ||
+            !action.title.trim() ||
+            [...action.title.trim()].length > 200)) ||
+        (action.due_at !== undefined &&
+          action.due_at !== "" &&
+          (typeof action.due_at !== "string" ||
+            !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?[+-]\d\d:\d\d$/.test(
+              action.due_at,
+            ) ||
+            !Number.isFinite(Date.parse(action.due_at)) ||
+            Date.parse(action.due_at) <= Date.parse(request.now))) ||
+        (!hasDueAt && !hasTitle && !hasRepeat)
       )
         throw new RequestError(
           "Morning returned an invalid reminder update. Nothing was changed. Please retry.",
         );
       actions.push({
         type: "reschedule_reminder",
-        reminder_id: request.reminder_context.id,
-        due_at: action.due_at,
-        ...(action.repeat
+        reminder_id: target.id,
+        ...(hasTitle ? { title: (action.title as string).trim() } : {}),
+        ...(hasDueAt ? { due_at: action.due_at as string } : {}),
+        ...(hasRepeat
           ? { repeat: action.repeat as "daily" | "weekly" | "weekdays" }
           : {}),
       });
+    } else if (action.type === "delete_reminder") {
+      const target = knownReminders.find((r) => r.id === action.reminder_id);
+      if (
+        !target ||
+        seenDeletedReminders.has(target.id) ||
+        (request.selected_reminder_id &&
+          target.id !== request.selected_reminder_id) ||
+        Object.keys(action).some((key) => !["type", "reminder_id"].includes(key))
+      )
+        throw new RequestError(
+          "Morning returned an invalid reminder deletion. Nothing was changed. Please retry.",
+        );
+      seenDeletedReminders.add(target.id);
+      actions.push({
+        type: "delete_reminder",
+        reminder_id: target.id,
+      });
     } else if (action.type === "update_draft") {
+      const target = knownDrafts.find((d) => d.id === action.draft_id);
+      const nextContact =
+        action.to_contact_id !== undefined && action.to_contact_id !== ""
+          ? request.contacts?.find((c) => c.id === action.to_contact_id)
+          : undefined;
       if (
         value.actions.length !== 1 ||
-        !request.draft_context ||
-        action.draft_id !== request.draft_context.id ||
-        (request.selected_draft_id &&
-          action.draft_id !== request.selected_draft_id) ||
+        !target ||
+        (request.selected_draft_id && target.id !== request.selected_draft_id) ||
         Object.keys(action).some(
-          (key) => !["type", "draft_id", "subject", "body"].includes(key),
+          (key) =>
+            !["type", "draft_id", "to_contact_id", "subject", "body"].includes(
+              key,
+            ),
         ) ||
+        (action.to_contact_id !== undefined &&
+          action.to_contact_id !== "" &&
+          !nextContact) ||
         typeof action.subject !== "string" ||
         !action.subject.trim() ||
         [...action.subject].length > 200 ||
@@ -451,15 +577,34 @@ export function parseCommandResponse(
         );
       actions.push({
         type: "update_draft",
-        draft_id: request.draft_context.id,
-        subject: action.subject,
-        body: action.body,
+        draft_id: target.id,
+        ...(nextContact ? { to_contact_id: nextContact.id } : {}),
+        subject: action.subject.trim(),
+        body: action.body.trim(),
+      });
+    } else if (action.type === "delete_draft") {
+      const target = knownDrafts.find((d) => d.id === action.draft_id);
+      if (
+        !target ||
+        seenDeletedDrafts.has(target.id) ||
+        (request.selected_draft_id && target.id !== request.selected_draft_id) ||
+        Object.keys(action).some((key) => !["type", "draft_id"].includes(key))
+      )
+        throw new RequestError(
+          "Morning returned an invalid draft deletion. Nothing was changed. Please retry.",
+        );
+      seenDeletedDrafts.add(target.id);
+      actions.push({
+        type: "delete_draft",
+        draft_id: target.id,
       });
     } else if (action.type === "draft_email") {
+      draftCount++;
       const recipient = request.contacts?.find(
         (contact) => contact.id === action.to_contact_id,
       );
       if (
+        draftCount > 1 ||
         Object.keys(action).some(
           (key) => !["type", "to_contact_id", "subject", "body"].includes(key),
         ) ||
@@ -480,8 +625,8 @@ export function parseCommandResponse(
       actions.push({
         type: "draft_email",
         to_contact_id: recipient.id,
-        subject: action.subject,
-        body: action.body,
+        subject: action.subject.trim(),
+        body: action.body.trim(),
       });
     } else
       throw new RequestError(
@@ -497,9 +642,16 @@ export function parseCommandResponse(
     );
   if (
     (request.selected_reminder_id &&
-      !actions.some((action) => action.type === "reschedule_reminder")) ||
+      !actions.some(
+        (action) =>
+          action.type === "reschedule_reminder" ||
+          action.type === "delete_reminder",
+      )) ||
     (request.selected_draft_id &&
-      !actions.some((action) => action.type === "update_draft"))
+      !actions.some(
+        (action) =>
+          action.type === "update_draft" || action.type === "delete_draft",
+      ))
   )
     throw new RequestError(
       "Morning didn't update the selected item. Nothing was changed. Please retry.",
@@ -526,14 +678,18 @@ export function withSelectedContact(
 
 export function withSelectedReminder(
   request: CommandRequest,
-  options: readonly { id: string; dueAt: string }[],
+  options: readonly { id: string; dueAt: string; title?: string }[],
   id: string,
 ): CommandRequest {
   const reminder = options.find((option) => option.id === id);
   if (!reminder) throw new RequestError("Choose one of the offered reminders.");
   return {
     ...request,
-    reminder_context: { id: reminder.id, due_at: reminder.dueAt },
+    reminder_context: {
+      id: reminder.id,
+      due_at: reminder.dueAt,
+      ...(reminder.title ? { title: reminder.title } : {}),
+    },
     selected_reminder_id: reminder.id,
   };
 }

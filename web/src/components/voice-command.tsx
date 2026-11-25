@@ -1,5 +1,11 @@
-import { useEffect, useState, type Ref } from "react";
-import { Check, CircleAlert, Mic } from "lucide-react";
+import {
+  useEffect,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+  type Ref,
+} from "react";
+import { Check, CircleAlert, Mic, SendHorizontal } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import type { VoiceView } from "@/hooks/use-reminder-flow";
@@ -13,7 +19,10 @@ type Props = {
   orbCore: Ref<HTMLSpanElement>;
   disabled: boolean;
   archive: boolean;
+  autoStop: boolean;
+  onToggleAutoStop: (next: boolean) => void;
   onToggle: () => void;
+  onSubmitText: (text: string) => void;
   onRetry: () => void;
   onCancel: () => void;
   onRetrySpeech: () => void;
@@ -28,7 +37,10 @@ export function VoiceCommand({
   orbCore,
   disabled,
   archive,
+  autoStop,
+  onToggleAutoStop,
   onToggle,
+  onSubmitText,
   onRetry,
   onCancel,
   onRetrySpeech,
@@ -41,6 +53,7 @@ export function VoiceCommand({
   const listening = phase === "listening";
   const blocked = !canToggleRecorder(phase);
   const [clock, setClock] = useState(Date.now);
+  const [typed, setTyped] = useState("");
   const retryDeadline = Math.max(view.retryAt, view.lookupRetryAt ?? 0);
 
   useEffect(() => {
@@ -51,6 +64,31 @@ export function VoiceCommand({
   }, [retryDeadline, phase]);
 
   const wait = Math.max(0, Math.ceil((retryDeadline - clock) / 1000));
+  const composeBlocked =
+    disabled || archive || listening || blocked || view.retryAt > clock;
+
+  function submitTyped() {
+    const clean = typed.trim();
+    if (!clean || composeBlocked) return;
+    setTyped("");
+    onSubmitText(clean);
+  }
+
+  function handleFormSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    submitTyped();
+  }
+
+  function handleInputKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    // Respect active IME composition (Hindi, CJK, etc.) before submitting on Enter.
+    if (
+      event.key === "Enter" &&
+      (event.nativeEvent.isComposing || event.keyCode === 229)
+    ) {
+      event.preventDefault();
+    }
+  }
+
   const status =
     phase === "loading"
       ? "Loading saved results…"
@@ -134,16 +172,63 @@ export function VoiceCommand({
             ? "Listening…"
             : archive
               ? "Earlier activity"
-              : "Speak English, Hindi or Hinglish."
+              : "Speak or type in English, Hindi or Hinglish."
         }
       />
-      <p id="capture-notice" className="capture-notice">
-        {archive
-          ? "Choose New session to record."
-          : disabled
-            ? "Please wait to start another recording."
-            : "Audio goes to Deepgram. Your command, relevant contacts and saved item context go to Morning's server. Results stay in this browser."}
-      </p>
+      {!archive ? (
+        <form className="command-compose" onSubmit={handleFormSubmit}>
+          <label htmlFor="command-input" className="sr-only">
+            Type a command or question
+          </label>
+          <input
+            id="command-input"
+            name="command"
+            type="text"
+            className="command-input"
+            value={typed}
+            onChange={(event) => setTyped(event.target.value)}
+            onKeyDown={handleInputKeyDown}
+            disabled={composeBlocked}
+            placeholder={
+              view.lookupContext
+                ? "Type the city or landmark…"
+                : "Type a command, follow-up, or question…"
+            }
+            enterKeyHint="send"
+            autoComplete="off"
+          />
+          <Button
+            type="submit"
+            variant="outline"
+            className="command-send"
+            disabled={composeBlocked || !typed.trim()}
+          >
+            <SendHorizontal size={15} aria-hidden="true" />
+            <span>Send</span>
+          </Button>
+        </form>
+      ) : null}
+      <div className="capture-meta">
+        <p id="capture-notice" className="capture-notice">
+          {archive
+            ? "Choose New session to record."
+            : disabled
+              ? "Please wait to start another recording."
+              : "Voice goes to Deepgram. Commands, contacts and recent session context go to Morning's server. Results stay in this browser."}
+        </p>
+        {!archive ? (
+          <label className="auto-stop-toggle" htmlFor="auto-stop-toggle">
+            <input
+              id="auto-stop-toggle"
+              name="auto_stop"
+              type="checkbox"
+              checked={autoStop}
+              onChange={(event) => onToggleAutoStop(event.target.checked)}
+            />
+            <span>Auto-stop on pause</span>
+          </label>
+        ) : null}
+      </div>
       <div
         className={`command-status${status ? " is-visible" : ""}`}
         role="status"
@@ -247,8 +332,8 @@ export function VoiceCommand({
           ) : (
             <p className="revised-command">
               {view.lookupContext
-                ? "Say the city or landmark to finish your search."
-                : "Say the full revised command, including any reminder time."}
+                ? "Say or type the city or landmark to finish your search."
+                : "Say or type the revised command, including any reminder time."}
             </p>
           )}
         </div>

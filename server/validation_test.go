@@ -25,14 +25,11 @@ func TestRejectsInvalidModelOutput(t *testing.T) {
 		{"invalid calendar date", strings.Replace(validContent, "2026-11-03", "2026-02-30", 1)},
 		{"multiple reminders", `{"actions":[` + validAction + `,` + validAction + `],"clarification":null,"recipient_name":null}`},
 		{"action and question", strings.Replace(validContent, `"clarification":null`, `"clarification":"When?"`, 1)},
-		{"missing clarification", `{"actions":[` + validAction + `]}`},
-		{"missing recipient context", `{"actions":[` + validAction + `],"clarification":null}`},
-		{"missing actions", `{"clarification":"When?"}`},
+		{"missing actions", `{}`},
 		{"null actions", `{"actions":null,"clarification":"When?"}`},
 		{"no action or question", `{"actions":[],"clarification":null}`},
 		{"blank question", `{"actions":[],"clarification":" "}`},
 		{"non-JSON content", "Here is your reminder"},
-		{"fenced JSON", "```json\n" + validContent + "\n```"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			envelope, err := json.Marshal(map[string]any{

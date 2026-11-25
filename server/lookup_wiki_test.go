@@ -240,6 +240,7 @@ func TestLookupWikiMissingAndAmbiguousResults(t *testing.T) {
 				}
 				return lookupJSONResponse(404, `{"type":"not_found"}`), nil
 			})
+			s.tavilyKey = ""
 			outcome, err := s.lookup(context.Background(), lookupQuery{Kind: "wiki", Terms: "Mercury", ReplyLanguage: tc.language}, "guest", "UTC")
 			if err != nil || outcome.Result == nil || outcome.Question != "" || outcome.Pending != nil {
 				t.Fatalf("expected a saved empty result, got %+v, %v", outcome, err)
@@ -321,6 +322,7 @@ func TestLookupWikiBoundsBodiesIncludingNotFoundAndSearch(t *testing.T) {
 					}
 					return response, nil
 				})
+				s.tavilyKey = ""
 				outcome, err := s.lookup(context.Background(), lookupQuery{Kind: "wiki", Terms: "Topic"}, "guest", "UTC")
 				if tracked == nil || !tracked.closed || tracked.read > maxLookupBody+1 {
 					t.Fatalf("body was not bounded and closed: %+v", tracked)

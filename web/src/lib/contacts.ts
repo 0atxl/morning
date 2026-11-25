@@ -44,3 +44,11 @@ export function relevantContacts(
     .slice(0, 20)
     .map(({ id, name, email }) => ({ id, name, email }));
 }
+
+// Address book is already capped at 20 entries; sending all plain contact rows
+// ensures STT variations, Hindi transliterations, and pronoun follow-ups resolve.
+export function allContactsForCommand(contacts: readonly Contact[]): Contact[] {
+  return contacts
+    .slice(0, 20)
+    .map(({ id, name, email }) => ({ id, name, email }));
+}

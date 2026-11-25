@@ -159,7 +159,7 @@ func TestHindiSearchTranslatesOnlyTheSupportedAnswer(t *testing.T) {
 	const translated = "नवीनतम स्थिर Go रिलीज़ 1.99.2 है।"
 	s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
 		if r.URL.String() != groqCommandURL {
-			return fixtureMCP(t, r, fixture(t, "tavily-go-release.json"), func(args map[string]any) {
+			return fixtureTavilyREST(t, r, fixture(t, "tavily-go-release.json"), func(args map[string]any) {
 				if args["query"] != "latest stable Go release" || args["reply_language"] != nil {
 					t.Fatal("search received more than needed")
 				}

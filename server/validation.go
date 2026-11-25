@@ -13,6 +13,8 @@ import (
 	"unicode/utf8"
 )
 
+const maxReplyChars = 500
+
 func decodeObject(body []byte, dst any) error {
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 || body[0] != '{' || !utf8.Valid(body) {
@@ -34,15 +36,51 @@ func validCommandID(id string) bool {
 		return false
 	}
 	for _, c := range id {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == ':') {
 			return false
 		}
 	}
 	return true
 }
 
+func validRepeat(value string) bool {
+	return value == "" || value == "daily" || value == "weekly" || value == "weekdays"
+}
+
+func allReminders(request commandRequest) []reminderContextItem {
+	seen := make(map[string]bool)
+	var out []reminderContextItem
+	if r := request.ReminderContext; r != nil {
+		seen[r.ID] = true
+		out = append(out, reminderContextItem{ID: r.ID, Title: r.Title, DueAt: r.DueAt, Repeat: r.Repeat})
+	}
+	for _, r := range request.RemindersContext {
+		if !seen[r.ID] {
+			seen[r.ID] = true
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func allDrafts(request commandRequest) []draftContext {
+	seen := make(map[string]bool)
+	var out []draftContext
+	if d := request.DraftContext; d != nil {
+		seen[d.ID] = true
+		out = append(out, *d)
+	}
+	for _, d := range request.DraftsContext {
+		if !seen[d.ID] {
+			seen[d.ID] = true
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 func validateRequest(request commandRequest) (time.Time, *time.Location, error) {
-	if !validCommandID(request.CommandID) {
+	if !validCommandID(request.CommandID) || strings.Contains(request.CommandID, ":") {
 		return time.Time{}, nil, errors.New("command_id must contain 1 to 128 letters, digits, hyphens or underscores.")
 	}
 	if strings.TrimSpace(request.Transcript) == "" || len(request.Transcript) > 8192 {
@@ -53,7 +91,9 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 		if validateLookup(pending.Query) != nil || (pending.Query.Kind != "hotels" && pending.Query.Kind != "weather" && pending.Query.Kind != "time" && pending.Query.Kind != "briefing") ||
 			(pending.ReplyLanguage != "" && pending.ReplyLanguage != "en" && pending.ReplyLanguage != "hi") ||
 			(pending.City != "" && !validText(pending.City, 100)) || len(request.Contacts) > 0 || request.SelectedContactID != nil ||
-			request.ReminderContext != nil || request.SelectedReminderID != nil || request.DraftContext != nil || request.SelectedDraftID != nil || request.PreviousTurn != nil {
+			request.ReminderContext != nil || len(request.RemindersContext) > 0 || request.SelectedReminderID != nil ||
+			request.DraftContext != nil || len(request.DraftsContext) > 0 || request.SelectedDraftID != nil ||
+			request.PreviousTurn != nil || len(request.RecentTurns) > 0 {
 			return time.Time{}, nil, errors.New("lookup_context must contain only a pending place lookup, without action context.")
 		}
 	}
@@ -63,6 +103,18 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 			len(pt.Answer) > 4000 || !utf8.ValidString(pt.Answer) ||
 			len(pt.Reply) > 1000 || !utf8.ValidString(pt.Reply) {
 			return time.Time{}, nil, errors.New("previous_turn fields exceed permitted length or contain invalid text.")
+		}
+	}
+	if len(request.RecentTurns) > 10 {
+		return time.Time{}, nil, errors.New("recent_turns must contain at most 10 turns.")
+	}
+	for _, turn := range request.RecentTurns {
+		if len(turn.Transcript) > 8192 || !utf8.ValidString(turn.Transcript) ||
+			len(turn.Topic) > 300 || !utf8.ValidString(turn.Topic) ||
+			len(turn.Answer) > 4000 || !utf8.ValidString(turn.Answer) ||
+			len(turn.Reply) > 1000 || !utf8.ValidString(turn.Reply) ||
+			len(turn.Kind) > 40 || !utf8.ValidString(turn.Kind) {
+			return time.Time{}, nil, errors.New("recent_turns fields exceed permitted length or contain invalid text.")
 		}
 	}
 	now, err := time.Parse(time.RFC3339Nano, request.Now)
@@ -80,23 +132,54 @@ func validateRequest(request commandRequest) (time.Time, *time.Location, error) 
 		return time.Time{}, nil, err
 	}
 	if reminder := request.ReminderContext; reminder != nil {
-		if !validCommandID(reminder.ID) || reminder.ID == request.CommandID || reminder.DueAt.IsZero() {
+		if !validCommandID(reminder.ID) || reminder.ID == request.CommandID || reminder.DueAt.IsZero() || !validRepeat(reminder.Repeat) || (reminder.Title != "" && !validText(strings.TrimSpace(reminder.Title), 200)) {
 			return time.Time{}, nil, errors.New("reminder_context requires a saved reminder ID distinct from command_id and its RFC 3339 due_at.")
 		}
 	}
+	if len(request.RemindersContext) > 10 {
+		return time.Time{}, nil, errors.New("reminders_context must contain at most 10 reminders.")
+	}
+	remIDs := make(map[string]bool)
+	if request.ReminderContext != nil {
+		remIDs[request.ReminderContext.ID] = true
+	}
+	for _, rem := range request.RemindersContext {
+		if !validCommandID(rem.ID) || rem.ID == request.CommandID || rem.DueAt.IsZero() || !validRepeat(rem.Repeat) || (rem.Title != "" && !validText(strings.TrimSpace(rem.Title), 200)) {
+			return time.Time{}, nil, errors.New("reminders_context requires valid saved reminder IDs and RFC 3339 due_at values.")
+		}
+		remIDs[rem.ID] = true
+	}
 	if selected := request.SelectedReminderID; selected != nil {
-		if !validCommandID(*selected) || request.ReminderContext == nil || *selected != request.ReminderContext.ID {
-			return time.Time{}, nil, errors.New("selected_reminder_id must match reminder_context.id.")
+		if !validCommandID(*selected) || !remIDs[*selected] {
+			return time.Time{}, nil, errors.New("selected_reminder_id must match a supplied reminder.")
 		}
 	}
-	if draft := request.DraftContext; draft != nil {
+	validateDraftItem := func(draft draftContext) bool {
 		id := strings.TrimPrefix(draft.ID, "draft:")
-		if !validCommandID(id) || id == request.CommandID || !validText(draft.Subject, 200) || !validDraftBody(draft.Body) || !validText(draft.Recipient, 254) || !validText(draft.To, 254) {
+		return validCommandID(id) && id != request.CommandID &&
+			validText(strings.TrimSpace(draft.Subject), 200) &&
+			validDraftBody(strings.TrimSpace(draft.Body)) &&
+			validText(strings.TrimSpace(draft.Recipient), 254) &&
+			validText(strings.TrimSpace(draft.To), 254)
+	}
+	draftIDs := make(map[string]bool)
+	if draft := request.DraftContext; draft != nil {
+		if !validateDraftItem(*draft) {
 			return time.Time{}, nil, errors.New("draft_context requires an existing draft ID, recipient, subject and message.")
 		}
+		draftIDs[draft.ID] = true
 	}
-	if selected := request.SelectedDraftID; selected != nil && (request.DraftContext == nil || *selected != request.DraftContext.ID) {
-		return time.Time{}, nil, errors.New("selected_draft_id must match draft_context.id.")
+	if len(request.DraftsContext) > 10 {
+		return time.Time{}, nil, errors.New("drafts_context must contain at most 10 drafts.")
+	}
+	for _, draft := range request.DraftsContext {
+		if !validateDraftItem(draft) {
+			return time.Time{}, nil, errors.New("drafts_context requires valid existing draft IDs, recipients, subjects and messages.")
+		}
+		draftIDs[draft.ID] = true
+	}
+	if selected := request.SelectedDraftID; selected != nil && !draftIDs[*selected] {
+		return time.Time{}, nil, errors.New("selected_draft_id must match a supplied draft.")
 	}
 	return now.In(location), location, nil
 }
@@ -116,7 +199,7 @@ func validText(value string, maxLength int) bool {
 const offsetTimestamp = "2006-01-02T15:04:05.999999999-07:00"
 
 func parseZonedInstant(value string, location *time.Location) (time.Time, error) {
-	instant, err := time.Parse(time.RFC3339, value)
+	instant, err := time.Parse(time.RFC3339, strings.TrimSpace(value))
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -129,9 +212,36 @@ func parseZonedInstant(value string, location *time.Location) (time.Time, error)
 	return local, nil
 }
 
+func collapseSingleLine(value string) string {
+	// Convert newlines/tabs into single spaces while preserving control-char
+	// rejection for non-whitespace control runes (like \x00).
+	var b strings.Builder
+	prevSpace := false
+	for _, c := range strings.TrimSpace(value) {
+		if c == '\n' || c == '\r' || c == '\t' || c == ' ' {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(c)
+		prevSpace = false
+	}
+	return b.String()
+}
+
 func validateInterpretation(result *interpretation, now time.Time, location *time.Location) error {
-	if result.Actions == nil || len(result.Actions) > 2 {
-		return errors.New("expected zero, one or two actions")
+	if result.Actions == nil || len(result.Actions) > 4 {
+		return errors.New("expected zero to four actions")
+	}
+	if result.Clarification != nil {
+		trimmed := collapseSingleLine(*result.Clarification)
+		if trimmed == "" {
+			result.Clarification = nil
+		} else {
+			result.Clarification = &trimmed
+		}
 	}
 	if len(result.Actions) == 0 {
 		if result.Clarification == nil || !validText(*result.Clarification, 500) {
@@ -142,71 +252,112 @@ func validateInterpretation(result *interpretation, now time.Time, location *tim
 	if result.Clarification != nil {
 		return errors.New("a clarification cannot accompany an action")
 	}
-	seen := make(map[string]bool)
+	draftCount := 0
+	seenReminders := make(map[string]bool)
 	for i := range result.Actions {
-		action := &result.Actions[i]
-		if seen[action.Type] {
-			return errors.New("at most one action of each type is supported")
-		}
-		seen[action.Type] = true
-		if action.Repeat != "" && action.Type != "create_reminder" && action.Type != "reschedule_reminder" {
+		act := &result.Actions[i]
+		// Trim whitespace before validating so trailing spaces/newlines from
+		// LLMs never cause spurious 422 rejections.
+		act.Text = collapseSingleLine(act.Text)
+		act.Title = strings.TrimSpace(act.Title)
+		act.DueAt = strings.TrimSpace(act.DueAt)
+		act.Start = strings.TrimSpace(act.Start)
+		act.End = strings.TrimSpace(act.End)
+		act.Repeat = strings.TrimSpace(act.Repeat)
+		act.ReminderID = strings.TrimSpace(act.ReminderID)
+		act.DraftID = strings.TrimSpace(act.DraftID)
+		act.ToContactID = strings.TrimSpace(act.ToContactID)
+		act.Subject = strings.TrimSpace(act.Subject)
+		act.Body = strings.TrimSpace(act.Body)
+		act.StartPhrase = strings.TrimSpace(act.StartPhrase)
+		act.EndPhrase = strings.TrimSpace(act.EndPhrase)
+
+		if act.Repeat != "" && act.Type != "create_reminder" && act.Type != "reschedule_reminder" {
 			return errors.New("repeat belongs only to reminder actions")
 		}
-		if action.Type != "reply" && action.Text != "" {
+		if act.Type != "reply" && act.Text != "" {
 			return errors.New("reply text cannot accompany a saved action")
 		}
-		switch action.Type {
+		switch act.Type {
 		case "reply":
-			if len(result.Actions) != 1 || !validText(action.Text, maxSpeechChars) || action.Title != "" || action.DueAt != "" || action.ReminderID != "" || action.ToContactID != "" || action.Subject != "" || action.Body != "" || action.Start != "" || action.End != "" || action.StartPhrase != "" || action.EndPhrase != "" || action.Timezone != "" {
+			if len(result.Actions) != 1 || !validText(act.Text, maxReplyChars) || act.Title != "" || act.DueAt != "" || act.ReminderID != "" || act.DraftID != "" || act.ToContactID != "" || act.Subject != "" || act.Body != "" || act.Start != "" || act.End != "" || act.StartPhrase != "" || act.EndPhrase != "" || act.Timezone != "" {
 				return errors.New("a conversational reply must stand alone without saved actions")
 			}
-		case "create_reminder", "reschedule_reminder":
-			if action.ToContactID != "" || action.Subject != "" || action.Body != "" {
+		case "create_reminder":
+			if act.ToContactID != "" || act.Subject != "" || act.Body != "" || act.ReminderID != "" || act.DraftID != "" {
 				return errors.New("invalid reminder fields")
 			}
-			if action.Repeat != "" && action.Repeat != "daily" && action.Repeat != "weekly" && action.Repeat != "weekdays" {
+			if !validRepeat(act.Repeat) {
 				return errors.New("invalid repeat recurrence")
 			}
-			if action.Type == "reschedule_reminder" {
-				if len(result.Actions) != 1 || action.Title != "" {
-					return errors.New("a correction can only change one reminder time")
-				}
-			} else if !validText(action.Title, 200) {
+			if !validText(act.Title, 200) {
 				return errors.New("invalid reminder title")
 			}
-			due, err := parseZonedInstant(action.DueAt, location)
+			due, err := parseZonedInstant(act.DueAt, location)
 			if err != nil || !due.After(now) {
 				return errors.New("due_at must be a future RFC 3339 timestamp")
 			}
-			// Numeric offsets are explicit even for UTC, returned as +00:00.
-			action.DueAt = due.Format(offsetTimestamp)
+			act.DueAt = due.Format(offsetTimestamp)
+			remKey := strings.ToLower(act.Title) + "|" + act.DueAt
+			if seenReminders[remKey] {
+				return errors.New("duplicate reminder in the same command")
+			}
+			seenReminders[remKey] = true
+		case "reschedule_reminder":
+			if len(result.Actions) != 1 || act.ToContactID != "" || act.Subject != "" || act.Body != "" || act.DraftID != "" {
+				return errors.New("a reminder update must stand alone with valid reminder fields")
+			}
+			if !validRepeat(act.Repeat) {
+				return errors.New("invalid repeat recurrence")
+			}
+			if act.Title != "" && !validText(act.Title, 200) {
+				return errors.New("invalid reminder title")
+			}
+			if act.DueAt != "" {
+				due, err := parseZonedInstant(act.DueAt, location)
+				if err != nil || !due.After(now) {
+					return errors.New("due_at must be a future RFC 3339 timestamp")
+				}
+				act.DueAt = due.Format(offsetTimestamp)
+			}
+			if act.DueAt == "" && act.Title == "" && act.Repeat == "" {
+				return errors.New("a reminder update requires a new due_at, title, or repeat")
+			}
+		case "delete_reminder":
+			if act.Title != "" || act.DueAt != "" || act.Repeat != "" || act.ToContactID != "" || act.Subject != "" || act.Body != "" || act.DraftID != "" {
+				return errors.New("invalid delete_reminder fields")
+			}
 		case "create_calendar_event":
-			if len(result.Actions) != 1 || !validText(action.Title, 200) {
+			if len(result.Actions) != 1 || !validText(act.Title, 200) {
 				return errors.New("expected one titled calendar event")
 			}
-			start, err := parseZonedInstant(action.Start, location)
+			start, err := parseZonedInstant(act.Start, location)
 			if err != nil || !start.After(now) || start.Nanosecond() != 0 {
 				return errors.New("invalid calendar start")
 			}
-			// Resolve a spoken duration in elapsed time, including across an offset change.
 			var end time.Time
-			if duration, parseErr := time.ParseDuration(action.End); parseErr == nil {
+			if duration, parseErr := time.ParseDuration(act.End); parseErr == nil {
 				end = start.Add(duration)
 			} else {
-				end, err = parseZonedInstant(action.End, location)
+				end, err = parseZonedInstant(act.End, location)
 			}
 			if err != nil || !end.After(start) || end.Nanosecond() != 0 || end.Year() > 9999 {
 				return errors.New("invalid calendar end")
 			}
-			action.Start, action.End = start.Format(offsetTimestamp), end.Format(offsetTimestamp)
-			action.Timezone = location.String()
+			act.Start, act.End = start.Format(offsetTimestamp), end.Format(offsetTimestamp)
+			act.Timezone = location.String()
 		case "draft_email":
-			if !validCommandID(action.ToContactID) || !validText(action.Subject, 200) || !validDraftBody(action.Body) || action.Title != "" || action.DueAt != "" {
+			draftCount++
+			if draftCount > 1 || act.ToContactID == "" || !validText(act.Subject, 200) || !validDraftBody(act.Body) || act.Title != "" || act.DueAt != "" || act.ReminderID != "" || act.DraftID != "" {
 				return errors.New("invalid draft fields")
 			}
 		case "update_draft":
-			if len(result.Actions) != 1 || !validText(action.Subject, 200) || !validDraftBody(action.Body) || action.ToContactID != "" || action.Title != "" || action.DueAt != "" || action.DraftID != "" || action.ReminderID != "" {
-				return errors.New("a draft update can only replace the existing subject and message")
+			if len(result.Actions) != 1 || !validText(act.Subject, 200) || !validDraftBody(act.Body) || act.Title != "" || act.DueAt != "" || act.ReminderID != "" {
+				return errors.New("a draft update requires a valid subject and message")
+			}
+		case "delete_draft":
+			if act.Title != "" || act.DueAt != "" || act.Repeat != "" || act.ToContactID != "" || act.Subject != "" || act.Body != "" || act.ReminderID != "" {
+				return errors.New("invalid delete_draft fields")
 			}
 		default:
 			return errors.New("unsupported action")
@@ -278,9 +429,9 @@ func validateCommandCompleteness(result interpretation, transcript string) error
 		return nil
 	}
 	var draft, reminder bool
-	for _, action := range result.Actions {
-		draft = draft || action.Type == "draft_email"
-		reminder = reminder || action.Type == "create_reminder"
+	for _, act := range result.Actions {
+		draft = draft || act.Type == "draft_email"
+		reminder = reminder || act.Type == "create_reminder"
 	}
 	if !draft || !reminder {
 		return errors.New("a draft and reminder command requires both actions")

@@ -9,6 +9,10 @@ type Callbacks = {
   phase: (phase: CapturePhase) => void;
   captions: (captions: Captions) => void;
 };
+export type CaptureOptions = {
+  autoStopOnSilence?: boolean;
+  silenceMs?: number;
+};
 
 // One instance owns one recording or an explicit replay of its retained audio.
 // No provider request is made by constructing or importing this class.
@@ -30,11 +34,16 @@ export class VoiceCapture {
   private metadata = false;
   private keepAlive = 0;
   private watchdog = 0;
+  private silenceCheck = 0;
+  private heardSpeech = false;
+  private lastSpeechAt = 0;
+  private lastTranscriptText = "";
   private started = false;
 
   constructor(
     private readonly callbacks: Callbacks,
     private readonly replay?: readonly Blob[],
+    private readonly options: CaptureOptions = {},
   ) {}
 
   run(): Promise<string> {
@@ -60,7 +69,15 @@ export class VoiceCapture {
         );
       }
       try {
-        this.meter = micLevelMeter(this.callbacks.level);
+        this.meter = micLevelMeter((level) => {
+          this.callbacks.level(level);
+          if (level > 0.08) {
+            this.heardSpeech = true;
+            this.lastSpeechAt = Date.now();
+          } else if (this.heardSpeech && level > 0.05) {
+            this.lastSpeechAt = Date.now();
+          }
+        });
       } catch {
         // Metering is optional on browsers that only support MediaRecorder.
       }
@@ -156,6 +173,19 @@ export class VoiceCapture {
           }
           this.callbacks.captions({ final: "", interim: "" });
           this.callbacks.phase("listening");
+          if (this.options.autoStopOnSilence) {
+            const silenceMs = this.options.silenceMs ?? 2200;
+            this.lastSpeechAt = Date.now();
+            this.silenceCheck = window.setInterval(() => {
+              if (
+                this.isRecording &&
+                this.heardSpeech &&
+                Date.now() - this.lastSpeechAt >= silenceMs
+              ) {
+                this.stop();
+              }
+            }, 250);
+          }
         }
       } catch (error) {
         void this.fail(error);
@@ -170,9 +200,19 @@ export class VoiceCapture {
           );
         const data: unknown = JSON.parse(event.data);
         const message = object(data);
-        if (message?.type === "Results")
-          this.callbacks.captions(this.transcript.accept(data));
-        else if (message?.type === "Metadata" && this.closeSent)
+        if (message?.type === "Results") {
+          const next = this.transcript.accept(data);
+          const combined = [next.final, next.interim]
+            .filter(Boolean)
+            .join(" ")
+            .trim();
+          if (combined && combined !== this.lastTranscriptText) {
+            this.lastTranscriptText = combined;
+            this.heardSpeech = true;
+            this.lastSpeechAt = Date.now();
+          }
+          this.callbacks.captions(next);
+        } else if (message?.type === "Metadata" && this.closeSent)
           this.metadata = true;
         else if (message?.type === "Error")
           throw new Error(
@@ -205,12 +245,13 @@ export class VoiceCapture {
         return;
       }
       const captions = this.transcript.captions();
-      if (!captions.final.trim() || captions.interim.trim()) {
+      const transcriptText = [captions.final.trim(), captions.interim.trim()]
+        .filter(Boolean)
+        .join(" ");
+      if (!transcriptText) {
         void this.fail(
           new Error(
-            captions.final.trim()
-              ? "Some words weren't finalized. Nothing was submitted. Please retry."
-              : "No speech was transcribed. Please record a complete reminder command.",
+            "No speech was transcribed. Please speak or type your command.",
           ),
         );
         return;
@@ -218,7 +259,7 @@ export class VoiceCapture {
       this.ended = true;
       this.clearTimers();
       this.releaseMicrophone();
-      this.resolve(captions.final.trim());
+      this.resolve(transcriptText);
     };
   }
 
@@ -351,5 +392,6 @@ export class VoiceCapture {
   private clearTimers() {
     window.clearTimeout(this.watchdog);
     window.clearInterval(this.keepAlive);
+    window.clearInterval(this.silenceCheck);
   }
 }

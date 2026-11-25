@@ -81,8 +81,8 @@ func TestReminderContract(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body.Model != "openai/gpt-oss-20b" || body.ResponseFormat.Type != "json_schema" || !body.ResponseFormat.JSONSchema.Strict {
-			t.Fatal("expected the requested model and strict schema")
+		if body.Model != groqModel || body.ResponseFormat.Type != "json_object" {
+			t.Fatalf("expected primary model %s and json_object format, got %s %+v", groqModel, body.Model, body.ResponseFormat)
 		}
 		if len(body.Messages) != 2 || body.Messages[0].Role != "system" || body.Messages[1].Role != "user" {
 			t.Fatal("expected separate system instructions and transcript data")

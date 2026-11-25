@@ -240,8 +240,11 @@ func TestInvalidDraftOutputRejectsWholeCommand(t *testing.T) {
 		change func(*modelInterpretation, *commandRequest)
 	}{
 		{"unknown recipient ID", func(m *modelInterpretation, _ *commandRequest) { m.Actions[0].ToContactID = "invented" }},
-		{"missing recipient context", func(m *modelInterpretation, _ *commandRequest) { m.RecipientName = nil }},
-		{"invented recipient name", func(m *modelInterpretation, _ *commandRequest) { name := "Priya Shah"; m.RecipientName = &name }},
+		{"unmentioned recipient with nil name", func(m *modelInterpretation, r *commandRequest) {
+			m.RecipientName = nil
+			r.Transcript = "Draft an email asking to confirm the revised timeline."
+		}},
+		{"invented recipient name", func(m *modelInterpretation, _ *commandRequest) { name := "Bob Jones"; m.RecipientName = &name }},
 		{"empty subject", func(m *modelInterpretation, _ *commandRequest) { m.Actions[0].Subject = "" }},
 		{"subject header injection", func(m *modelInterpretation, _ *commandRequest) {
 			m.Actions[0].Subject = "Timeline\nBcc: other@example.com"

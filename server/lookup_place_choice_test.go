@@ -36,15 +36,11 @@ func TestLookupPlaceChoiceFetchesFactsForOnlyTheSelectedProviderRecord(t *testin
 					var payload struct {
 						Messages       []struct{ Content string }
 						ResponseFormat struct {
-							JSONSchema struct {
-								Name   string
-								Strict bool
-								Schema struct{ Properties map[string]json.RawMessage }
-							} `json:"json_schema"`
+							Type string `json:"type"`
 						} `json:"response_format"`
 					}
-					if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || payload.ResponseFormat.JSONSchema.Name != "morning_lookup_place_choice" || !payload.ResponseFormat.JSONSchema.Strict || len(payload.ResponseFormat.JSONSchema.Schema.Properties) != 1 {
-						t.Fatal("selection must use only the candidate-index schema")
+					if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 || payload.ResponseFormat.Type != "json_object" || !strings.Contains(payload.Messages[0].Content, "candidate_index") {
+						t.Fatal("selection must use only the candidate-index prompt and JSON output")
 					}
 					var data struct {
 						Query      string

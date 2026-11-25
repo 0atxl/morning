@@ -47,7 +47,7 @@ func TestCommandRepairPreservesReportedDraftContext(t *testing.T) {
 				if calls == 1 {
 					switch firstFailure {
 					case "contact":
-						name = "Priya Shah" // Not the name actually spoken.
+						name = "Bob Jones" // Truly invented recipient not in transcript or contacts.
 					case "mixed lookup":
 						model.Lookup = &lookupQuery{Kind: "weather", Place: "Pune"}
 					case "malformed JSON":
@@ -107,8 +107,12 @@ func TestCommandRepairDoesNotRetryProviderFailures(t *testing.T) {
 				return providerResponse(tc.upstream, "private provider detail"), nil
 			})
 			w := requestAPI(handler, "/api/commands", reportedDraftCommand)
+			wantCalls := 1
+			if tc.upstream == 429 {
+				wantCalls = len(defaultGroqModels)
+			}
 			var result apiError
-			if decodeObject(w.Body.Bytes(), &result) != nil || w.Code != tc.status || calls != 1 || result.Error.Code != tc.code || tc.status == 429 && w.Header().Get("Retry-After") != "60" {
+			if decodeObject(w.Body.Bytes(), &result) != nil || w.Code != tc.status || calls != wantCalls || result.Error.Code != tc.code || tc.status == 429 && w.Header().Get("Retry-After") != "60" {
 				t.Fatalf("provider failure was retried or misclassified: %d %s, calls=%d", w.Code, w.Body.String(), calls)
 			}
 		})

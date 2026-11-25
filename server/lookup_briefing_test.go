@@ -181,51 +181,36 @@ func TestLookupBriefingUsesSelectedProviderRecordAndQualifiedCityForNews(t *test
 			weather["timezone"] = chosen["timezone"]
 			body, _ := json.Marshal(weather)
 			return lookupJSONResponse(200, string(body)), nil
-		case "mcp.tavily.com":
+		case "api.tavily.com":
 			if weatherCalls != 1 {
 				t.Fatal("briefing searched news before resolving and validating weather")
 			}
-			return fixtureMCP(t, r, news, func(args map[string]any) {
+			return fixtureTavilyREST(t, r, news, func(args map[string]any) {
 				newsCalls++
-				if args["query"] != "news "+qualifiedPlace || args["topic"] != "news" || args["time_range"] != "d" {
+				if args["query"] != "news "+qualifiedPlace || args["topic"] != "news" || args["time_range"] != "day" {
 					t.Fatalf("news did not use the resolved qualified city: %v", args)
 				}
 			}), nil
 		case "api.groq.com":
 			var payload struct {
-				Messages       []struct{ Content string }
-				ResponseFormat struct {
-					JSONSchema struct{ Name string } `json:"json_schema"`
-				} `json:"response_format"`
+				Messages []struct{ Content string } `json:"messages"`
 			}
 			if json.NewDecoder(r.Body).Decode(&payload) != nil || len(payload.Messages) != 2 {
 				t.Fatal("invalid place-choice or evidence request")
 			}
-			switch payload.ResponseFormat.JSONSchema.Name {
-			case "morning_lookup_place_choice":
+			if strings.Contains(payload.Messages[0].Content, "candidate_index") {
 				choiceCalls++
 				return lookupPlaceResponse(`{"candidate_index":1}`), nil
-			case "morning_lookup_evidence":
-				evidenceCalls++
-				var data struct {
-					Query   lookupQuery
-					Sources []lookupSource
-				}
-				if json.Unmarshal([]byte(payload.Messages[1].Content), &data) != nil || data.Query.Kind != "news" || data.Query.Place != qualifiedPlace || !data.Query.Today || len(data.Sources) != 1 || data.Sources[0].PublishedAt != "2026-11-03T02:00:00Z" {
-					t.Fatalf("news evidence lost the selected city or included old/undated stories: %+v", data)
-				}
-				return evidenceResponse("", evidenceItem(0, "Research centre", "New Delhi opens a research centre.")), nil
-			default:
-				t.Fatalf("unexpected Groq schema: %s", payload.ResponseFormat.JSONSchema.Name)
-				return nil, nil
 			}
+			t.Fatalf("unexpected extra Groq call in English briefing")
+			return nil, nil
 		default:
 			t.Fatalf("unexpected briefing provider: %s", r.URL)
 			return nil, nil
 		}
 	})
 	outcome, err := s.lookup(context.Background(), lookupQuery{Kind: "briefing", Place: "New Delhi", Today: true}, "guest", "Asia/Kolkata")
-	if err != nil || outcome.Result == nil || outcome.Pending != nil || choiceCalls != 1 || weatherCalls != 1 || newsCalls != 1 || evidenceCalls != 1 {
+	if err != nil || outcome.Result == nil || outcome.Pending != nil || choiceCalls != 1 || weatherCalls != 1 || newsCalls != 1 || evidenceCalls != 0 {
 		t.Fatalf("selected briefing failed: %+v %v", outcome, err)
 	}
 	r := outcome.Result
@@ -261,8 +246,8 @@ func TestLookupBriefingCapsHeadlinesAtTwoAlongsideWeather(t *testing.T) {
 			return lookupJSONResponse(200, fixture(t, "open-meteo-pune.json")), nil
 		case "api.open-meteo.com":
 			return lookupJSONResponse(200, fixture(t, "open-meteo-current.json")), nil
-		case "mcp.tavily.com":
-			return fixtureMCP(t, r, string(news), nil), nil
+		case "api.tavily.com":
+			return fixtureTavilyREST(t, r, string(news), nil), nil
 		case "api.groq.com":
 			return evidenceResponse("",
 				evidenceItem(0, items[0].Title, items[0].Content),
@@ -304,6 +289,10 @@ func TestLookupBriefingNewsFailuresKeepWeatherAndStateUnavailable(t *testing.T) 
 			{name: "evidence quota", stage: "evidence", status: 429},
 		} {
 			t.Run(language+"/"+tc.name, func(t *testing.T) {
+				if language == "en" && tc.stage == "evidence" {
+					// English news uses Tavily REST directly with zero Groq evidence calls.
+					return
+				}
 				failedCalls := 0
 				s := lookupFixtureService(t, func(r *http.Request) (*http.Response, error) {
 					switch r.URL.Host {
@@ -311,14 +300,14 @@ func TestLookupBriefingNewsFailuresKeepWeatherAndStateUnavailable(t *testing.T) 
 						return lookupJSONResponse(200, fixture(t, "open-meteo-pune.json")), nil
 					case "api.open-meteo.com":
 						return lookupJSONResponse(200, fixture(t, "open-meteo-current.json")), nil
-					case "mcp.tavily.com", "api.groq.com":
+					case "api.tavily.com", "api.groq.com":
 						if tc.name == "missing key" {
 							t.Fatalf("missing news key must not call news providers: %s", r.URL)
 						}
-						if r.URL.Host == "mcp.tavily.com" && tc.stage == "evidence" {
-							return fixtureMCP(t, r, fixture(t, "tavily-news.json"), nil), nil
+						if r.URL.Host == "api.tavily.com" && tc.stage == "evidence" {
+							return fixtureTavilyREST(t, r, fixture(t, "tavily-news.json"), nil), nil
 						}
-						if tc.stage == "search" && r.URL.Host != "mcp.tavily.com" {
+						if tc.stage == "search" && r.URL.Host != "api.tavily.com" {
 							t.Fatal("failed news search must not reach evidence selection")
 						}
 						failedCalls++
@@ -341,6 +330,8 @@ func TestLookupBriefingNewsFailuresKeepWeatherAndStateUnavailable(t *testing.T) 
 				wantFailedCalls := 1
 				if tc.name == "missing key" {
 					wantFailedCalls = 0
+				} else if tc.stage == "evidence" && tc.status == 429 {
+					wantFailedCalls = len(defaultGroqModels)
 				}
 				r := outcome.Result
 				unavailable := "Headlines are unavailable right now."
@@ -378,8 +369,8 @@ func TestLookupBriefingUnconfirmedNewsDoesNotInventHeadlines(t *testing.T) {
 						return lookupJSONResponse(200, fixture(t, "open-meteo-pune.json")), nil
 					case "api.open-meteo.com":
 						return lookupJSONResponse(200, fixture(t, "open-meteo-current.json")), nil
-					case "mcp.tavily.com":
-						return fixtureMCP(t, r, news, nil), nil
+					case "api.tavily.com":
+						return fixtureTavilyREST(t, r, news, nil), nil
 					default:
 						t.Fatalf("unconfirmed or out-of-window news must not reach synthesis: %s", r.URL)
 						return nil, nil

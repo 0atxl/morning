@@ -24,14 +24,56 @@ func correctionQuestion(question string) interpretation {
 }
 
 func resolveCorrection(result interpretation, request commandRequest, location *time.Location) (interpretation, error) {
-	// The model distinguishes "make that more formal" from a reminder-time
-	// correction when both a draft and a reminder are in the conversation.
-	if len(result.Actions) == 1 && result.Actions[0].Type == "update_draft" {
+	// Draft updates/deletes are resolved separately in resolveDraftAction.
+	if len(result.Actions) > 0 && (result.Actions[0].Type == "update_draft" || result.Actions[0].Type == "delete_draft") {
 		return result, nil
 	}
-	if (otherTarget.MatchString(request.Transcript) || hindiOtherTarget.MatchString(request.Transcript)) && request.SelectedReminderID == nil {
+
+	reminders := allReminders(request)
+	byID := make(map[string]reminderContextItem, len(reminders))
+	for _, r := range reminders {
+		byID[r.ID] = r
+	}
+
+	// Handle delete_reminder actions (1 or more).
+	hasDelete := false
+	for _, a := range result.Actions {
+		if a.Type == "delete_reminder" {
+			hasDelete = true
+			break
+		}
+	}
+	if hasDelete {
+		if len(reminders) == 0 {
+			return correctionQuestion("Which reminder should I delete?"), nil
+		}
+		for i := range result.Actions {
+			if result.Actions[i].Type != "delete_reminder" {
+				continue
+			}
+			if request.SelectedReminderID != nil {
+				result.Actions[i].ReminderID = *request.SelectedReminderID
+				continue
+			}
+			if result.Actions[i].ReminderID != "" {
+				if _, ok := byID[result.Actions[i].ReminderID]; !ok {
+					return interpretation{}, errInvalidProviderOutput
+				}
+				continue
+			}
+			if len(reminders) == 1 {
+				result.Actions[i].ReminderID = reminders[0].ID
+				continue
+			}
+			return correctionQuestion("Which reminder should I delete?"), nil
+		}
+		return result, nil
+	}
+
+	if (otherTarget.MatchString(request.Transcript) || hindiOtherTarget.MatchString(request.Transcript)) && request.SelectedReminderID == nil && len(reminders) <= 1 {
 		return correctionQuestion("Which reminder should I move?"), nil
 	}
+
 	lead := correctionLead.FindStringIndex(request.Transcript)
 	hindiLead := hindiCorrection.FindStringSubmatch(request.Transcript)
 	reschedule := len(result.Actions) == 1 && result.Actions[0].Type == "reschedule_reminder"
@@ -41,13 +83,27 @@ func resolveCorrection(result interpretation, request commandRequest, location *
 	if reschedule && (newCommandLead.MatchString(request.Transcript) || hindiReminder.MatchString(unquotedCommand(request.Transcript))) {
 		return interpretation{}, errInvalidProviderOutput
 	}
-	reminder := request.ReminderContext
-	if reminder == nil {
+	if len(reminders) == 0 {
 		return correctionQuestion("Which reminder should I move?"), nil
 	}
 	if len(result.Actions) == 0 {
 		return result, nil
 	}
+
+	// Bind target reminder from explicit selection, verified model ID, or single saved reminder.
+	var target reminderContextItem
+	var haveTarget bool
+	if request.SelectedReminderID != nil {
+		target, haveTarget = byID[*request.SelectedReminderID]
+	} else if reschedule && result.Actions[0].ReminderID != "" {
+		target, haveTarget = byID[result.Actions[0].ReminderID]
+		if !haveTarget {
+			return interpretation{}, errInvalidProviderOutput
+		}
+	} else if len(reminders) == 1 {
+		target, haveTarget = reminders[0], true
+	}
+
 	if lead != nil || hindiLead != nil {
 		var when string
 		if hindiLead != nil {
@@ -62,19 +118,83 @@ func resolveCorrection(result interpretation, request commandRequest, location *
 		if !reschedule {
 			return interpretation{}, errInvalidProviderOutput
 		}
-		// A bare hour inherits the saved local date and half of the day.
-		// Reject a plausible timestamp if the model silently moved either.
-		if hour, ok := bareClockHour(when); ok {
-			old := reminder.DueAt.In(location)
-			due, err := time.Parse(time.RFC3339Nano, result.Actions[0].DueAt)
-			wantHour := hour%12 + old.Hour()/12*12
-			if err != nil || old.Format(time.DateOnly) != due.In(location).Format(time.DateOnly) ||
-				due.Hour() != wantHour || due.Minute() != 0 || due.Second() != 0 || due.Nanosecond() != 0 {
-				return interpretation{}, errInvalidProviderOutput
+		if !haveTarget {
+			return correctionQuestion("Which reminder should I move?"), nil
+		}
+		// A bare clock hour inherits the saved local date and half of the day.
+		// Only apply when the user is doing a time-only reschedule (not a title edit).
+		if result.Actions[0].DueAt != "" && result.Actions[0].Title == "" {
+			if hour, ok := bareClockHour(when); ok {
+				old := target.DueAt.In(location)
+				due, err := time.Parse(time.RFC3339Nano, result.Actions[0].DueAt)
+				wantHour := hour%12 + old.Hour()/12*12
+				if err != nil || old.Format(time.DateOnly) != due.In(location).Format(time.DateOnly) ||
+					due.Hour() != wantHour || due.Minute() != 0 || due.Second() != 0 || due.Nanosecond() != 0 {
+					return interpretation{}, errInvalidProviderOutput
+				}
 			}
 		}
 	}
-	result.Actions[0].ReminderID = reminder.ID
+
+	if !haveTarget {
+		return correctionQuestion("Which reminder should I move?"), nil
+	}
+	result.Actions[0].ReminderID = target.ID
+	return result, nil
+}
+
+func resolveDraftAction(result interpretation, request commandRequest) (interpretation, error) {
+	if len(result.Actions) == 0 {
+		return result, nil
+	}
+	drafts := allDrafts(request)
+	byID := make(map[string]draftContext, len(drafts))
+	for _, d := range drafts {
+		byID[d.ID] = d
+	}
+
+	for i := range result.Actions {
+		switch result.Actions[i].Type {
+		case "update_draft":
+			if len(drafts) == 0 {
+				return correctionQuestion("Which draft should I update?"), nil
+			}
+			if request.SelectedDraftID != nil {
+				result.Actions[i].DraftID = *request.SelectedDraftID
+				continue
+			}
+			if result.Actions[i].DraftID != "" {
+				if _, ok := byID[result.Actions[i].DraftID]; !ok {
+					return interpretation{}, errInvalidProviderOutput
+				}
+				continue
+			}
+			if len(drafts) == 1 {
+				result.Actions[i].DraftID = drafts[0].ID
+				continue
+			}
+			return correctionQuestion("Which draft should I update?"), nil
+		case "delete_draft":
+			if len(drafts) == 0 {
+				return correctionQuestion("Which draft should I delete?"), nil
+			}
+			if request.SelectedDraftID != nil {
+				result.Actions[i].DraftID = *request.SelectedDraftID
+				continue
+			}
+			if result.Actions[i].DraftID != "" {
+				if _, ok := byID[result.Actions[i].DraftID]; !ok {
+					return interpretation{}, errInvalidProviderOutput
+				}
+				continue
+			}
+			if len(drafts) == 1 {
+				result.Actions[i].DraftID = drafts[0].ID
+				continue
+			}
+			return correctionQuestion("Which draft should I delete?"), nil
+		}
+	}
 	return result, nil
 }
 
